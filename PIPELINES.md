@@ -145,7 +145,8 @@ graph TD
 
 **File:** `.github/workflows/ci.yml`  
 **Job ID:** `changes`  
-**Key Outputs:** `version`, `overview`, `pipelines_changed`
+**Key Outputs:** `version`, `overview`, `pipelines_changed`  
+**Loop Guard:** `if: github.actor != 'github-actions[bot]'`
 
 ### Trigger
 
@@ -153,7 +154,7 @@ graph TD
 on:
   push:
     branches: [main]
-  workflow_dispatch
+  workflow_dispatch   # manual bootstrap — forces PDF + RAG rebuild
 ```
 
 Fires on any push to `main` or manual trigger. **Always runs first**, but exits early if the pusher is `github-actions[bot]`.
@@ -193,7 +194,7 @@ else
   fi
 fi
 
-# 3. Commit + push
+# 3. Commit + push (pins downstream jobs to clean, versioned tip)
 echo "$NEW_VERSION" > VERSION
 git config user.name "github-actions[bot]"
 git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -211,9 +212,9 @@ echo "pipelines_changed=${PIPELINES_CHANGED}" >> "$GITHUB_OUTPUT"
 
 | Output | Type | Example | Used By |
 |---|---|---|---|
-| `version` | String | `1.3` | All downstream, release tag |
-| `overview` | Boolean | `true` / `false` | PDF, RAG (conditional) |
-| `pipelines_changed` | Boolean | `true` / `false` | PIPELINES.md update (conditional) |
+| `version` | String | `1.3` | All downstream jobs, release tag |
+| `overview` | Boolean | `true` / `false` | Job 2 (PDF), Job 3 (RAG) — conditional execution |
+| `pipelines_changed` | Boolean | `true` / `false` | Job 4 (update-pipelines) — conditional execution |
 
 ---
 
@@ -222,7 +223,7 @@ echo "pipelines_changed=${PIPELINES_CHANGED}" >> "$GITHUB_OUTPUT"
 **File:** `.github/workflows/ci.yml`  
 **Job ID:** `generate-pdf`  
 **Input:** `PROJECT_OVERVIEW.md`  
-**Output:** `PROJECT_OVERVIEW.pdf` (committed)
+**Output:** `PROJECT_OVERVIEW.pdf` (committed to repo)
 
 ### Trigger
 
@@ -231,26 +232,36 @@ needs: changes
 if: needs.changes.outputs.overview == 'true'
 ```
 
-Runs after `changes` job completes **only if** `overview` output is `true`.
+Runs after `changes` job completes **only if** `overview` output is `true`. Skipped for routine commits.
 
 ### Steps
 
 1. **Checkout** with `GITHUB_TOKEN`
-2. **Pull latest** — `git pull --rebase origin main` (picks up VERSION bump)
-3. **Install tools** — pandoc, texlive-xetex, texlive-fonts-recommended, texlive-plain-generic
+2. **Pull latest** — `git pull --rebase origin main` (picks up VERSION bump from Job 1)
+3. **Install tools** — pandoc, texlive-xetex, texlive-fonts-recommended, texlive-plain-generic, fonts-dejavu
 4. **Setup Node.js 20** and `npm install -g @mermaid-js/mermaid-cli`
 5. **Convert Mermaid diagrams to PNG** — embedded Python script
 6. **Generate PDF** via pandoc XeLaTeX
 7. **Commit + push** — `PROJECT_OVERVIEW.pdf` with `[skip ci]` tag
 
-### Mermaid → PNG Conversion
+### Mermaid → PNG Conversion Pipeline
 
 Embedded Python script in step 5:
 
 ```python
-import re, subprocess
+import re, os, subprocess, sys
+
+with open('PROJECT_OVERVIEW.md', 'r', encoding='utf-8') as f:
+    content = f.read()
+
 pattern = r'```mermaid\n(.*?)\n```'
 matches = list(re.finditer(pattern, content, re.DOTALL))
+
+if not matches:
+    print("No Mermaid diagrams found — skipping conversion.")
+    with open('PROJECT_OVERVIEW_processed.md', 'w', encoding='utf-8') as f:
+        f.write(content)
+    sys.exit(0)
 
 for i, match in enumerate(matches):
     mmd_file = f'diagram_{i}.mmd'
@@ -259,18 +270,27 @@ for i, match in enumerate(matches):
     with open(mmd_file, 'w', encoding='utf-8') as f:
         f.write(match.group(1))
     
-    subprocess.run([
-        'mmdc', '-i', mmd_file, '-o', png_file,
-        '--puppeteerConfigFile', 'puppeteer-config.json'
-    ])
+    result = subprocess.run(
+        ['mmdc', '-i', mmd_file, '-o', png_file,
+         '--puppeteerConfigFile', 'puppeteer-config.json'],
+        capture_output=True, text=True
+    )
     
+    if result.returncode != 0:
+        print(f"Error converting diagram {i+1}:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"Converted diagram {i+1} → {png_file}")
     content = content.replace(match.group(0), f'![Diagram {i+1}]({png_file})', 1)
 
 with open('PROJECT_OVERVIEW_processed.md', 'w', encoding='utf-8') as f:
     f.write(content)
+
+print(f"Done — {len(matches)} diagram(s) converted.")
 ```
 
-Puppeteer config suppresses sandbox errors in GitHub runner:
+**Puppeteer config** — suppresses sandbox errors in GitHub runner:
+
 ```json
 {"args": ["--no-sandbox", "--disable-setuid-sandbox"]}
 ```
@@ -284,10 +304,11 @@ pandoc PROJECT_OVERVIEW_processed.md \
   -V geometry:margin=1in \
   -V fontsize=11pt \
   -V mainfont="DejaVu Sans" \
+  -V monofont="DejaVu Sans Mono" \
   -o PROJECT_OVERVIEW.pdf
 ```
 
-**Rationale:** XeLaTeX supports native UTF-8 and system fonts. DejaVu Sans renders cleanly on all platforms.
+**Rationale:** XeLaTeX supports native UTF-8 and system fonts. DejaVu Sans renders cleanly on all platforms. TOC auto-generated from markdown headers.
 
 ### Artifacts
 
@@ -295,8 +316,8 @@ pandoc PROJECT_OVERVIEW_processed.md \
 |---|---|---|
 | `diagram_N.mmd` | Ephemeral | Cleaned up after PNG conversion |
 | `diagram_N.png` | Ephemeral | Embedded in PDF, not committed |
-| `PROJECT_OVERVIEW_processed.md` | Ephemeral | Intermediate file, not committed |
-| **`PROJECT_OVERVIEW.pdf`** | **Committed** | Permanent in repo |
+| `PROJECT_OVERVIEW_processed.md` | Ephemeral | Intermediate working file |
+| **`PROJECT_OVERVIEW.pdf`** | **Committed** | Permanent in repo; attached to release |
 
 ---
 
@@ -306,7 +327,7 @@ pandoc PROJECT_OVERVIEW_processed.md \
 **Job ID:** `build-vector-store`  
 **Script:** `.github/scripts/build_embeddings.py`  
 **Input:** `PROJECT_OVERVIEW.md`  
-**Output:** `chat/vector_store.json` (committed)
+**Output:** `chat/vector_store.json` (committed to repo)
 
 ### Trigger
 
@@ -315,59 +336,20 @@ needs: [changes, generate-pdf]
 if: needs.changes.outputs.overview == 'true'
 ```
 
-Runs after both `changes` and `generate-pdf` complete, **only if** `overview` is `true`. This ensures PDF is ready and VERSION is bumped.
+Runs after both `changes` and `generate-pdf` complete, **only if** `overview` is `true`. Allows Job 2 to update the source before embedding.
 
 ### Steps
 
 1. **Checkout** with `GITHUB_TOKEN`
 2. **Pull latest** — `git pull --rebase origin main`
 3. **Setup Python 3.11**
-4. **Cache Hugging Face models** — `~/.cache/huggingface` (key: `hf-ubuntu-all-MiniLM-L6-v2`)
+4. **Cache Hugging Face models** — `~/.cache/huggingface` (key: `hf-${{ runner.os }}-all-MiniLM-L6-v2`)
 5. **Install dependencies** — `pip install sentence-transformers numpy`
 6. **Build vector store** — `python .github/scripts/build_embeddings.py`
 7. **Commit + push** — `chat/vector_store.json` with `[skip ci]` tag
 
-### Chunking Strategy
+### Chunking Strategy (`build_embeddings.py`)
 
 ```python
 def chunk_markdown(text: str) -> list[str]:
     """Split markdown at H1/H2/H3 boundaries, then by blank lines for long chunks."""
-    
-    # Step 1: Split at header boundaries
-    pattern = r"(?=^#{1,3} )"
-    raw_chunks = re.split(pattern, text, flags=re.MULTILINE)
-    
-    chunks: list[str] = []
-    for raw in raw_chunks:
-        raw = raw.strip()
-        
-        # Step 2: Skip empty/tiny blocks
-        if not raw or len(raw) < 60:
-            continue
-        
-        # Step 3: Keep short chunks as-is
-        if len(raw) <= CHUNK_MAX_CHARS:  # 1200 chars
-            chunks.append(raw)
-            continue
-        
-        # Step 4: Split long chunks at blank lines
-        current = ""
-        for para in re.split(r"\n{2,}", raw):
-            if len(current) + len(para) > CHUNK_MAX_CHARS and current:
-                chunks.append(current.strip())
-                current = para
-            else:
-                current = (current + "\n\n" + para) if current else para
-        if current.strip():
-            chunks.append(current.strip())
-    
-    return chunks
-```
-
-**Result:** Each chunk is 60–1200 characters, optimized for semantic coherence and embedding context limits.
-
-### Embedding Model
-
-| Property | Value |
-|---|---|
-| Model |
