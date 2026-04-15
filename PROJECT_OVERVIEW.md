@@ -208,47 +208,28 @@ There are four workflow files under `.github/workflows/`.
 
 **Trigger:** Push to `main` when files under `app/src/**`, `site/src/**`, or `shared/**` change.
 
-```
-push to main
-    │
-    ├── job: version
-    │       Reads semantic version tags from git history
-    │       Outputs: app_version, content_version
-    │
-    ├── job: release  (calls release.yml)
-    │       Generates PDF artifacts from game content
-    │       Creates GitHub Release with PDFs attached
-    │
-    ├── job: deploy
-    │       pnpm install → pnpm build
-    │       firebase deploy --only hosting (target: propaganza-dev)
-    │
-    └── job: notify
-            Sends success/failure email via Gmail SMTP
-            Recipients: ${{ secrets.MAILING_LIST }}
+```mermaid
+graph TD
+    A[Push to main] --> B{deploy.yml}
+    B --> C[job: version\nReads semantic tags from git\nOutputs: app_version, content_version]
+    B --> D[job: release\nCalls release.yml\nGenerates PDFs + GitHub Release]
+    B --> E[job: deploy\npnpm install → pnpm build\nfirebase deploy — propaganza-dev]
+    B --> F[job: notify\nGmail SMTP\nSuccess / failure email]
+    D --> G[release.yml\nReusable workflow]
+    G --> H[Python PDF generation\nGitHub Release with assets]
 ```
 
 ### `update-content.yml` — Content sync pipeline
 
 **Trigger:** `repository_dispatch` webhook (sent by the content repo `albkom/propaganza` when new content is tagged) **or** manual `workflow_dispatch`.
 
-```
-webhook / manual trigger
-    │
-    ├── job: sync-and-version
-    │       git submodule update --remote content/
-    │       Applies version tags if content changed
-    │       Outputs: has_changes, content_version
-    │
-    ├── job: release  (calls release.yml)
-    │       Conditional on has_changes == true
-    │
-    ├── job: deploy
-    │       Conditional: if content changed → full rebuild + deploy
-    │       firebase deploy (target: propaganza, live project)
-    │
-    └── job: notify
-            Email notification
+```mermaid
+graph TD
+    A[repository_dispatch webhook\nor workflow_dispatch] --> B[job: sync-and-version\ngit submodule update --remote\nOutputs: has_changes, content_version]
+    B -->|has_changes == true| C[job: release\nCalls release.yml]
+    B -->|has_changes == true| D[job: deploy\nFull rebuild\nfirebase deploy — live project]
+    B --> E[job: notify\nEmail notification]
+    C --> F[release.yml\nGenerates PDFs\nCreates GitHub Release]
 ```
 
 ### `release.yml` — Reusable release workflow
@@ -425,15 +406,13 @@ Game content (rules, card art, assets) lives in a **separate private repository*
 
 ### Submodule sync flow
 
-```
-albkom/propaganza (content repo)
-    │  tags new version → sends repository_dispatch webhook
-    ▼
-propaganza-app/.github/workflows/update-content.yml
-    │  git submodule update --remote
-    │  applies version tag
-    │  → triggers release.yml → generates PDFs → GitHub Release
-    └  → triggers deploy.yml  → rebuilds app    → Firebase deploy
+```mermaid
+graph LR
+    A[albkom/propaganza\ncontent repo] -->|tags new version\nrepository_dispatch webhook| B[update-content.yml]
+    B -->|git submodule update --remote\napplies version tag| C[release.yml]
+    B --> D[deploy.yml]
+    C -->|generates PDFs| E[GitHub Release]
+    D -->|rebuilds app| F[Firebase Hosting\nlive project]
 ```
 
 ---
