@@ -131,7 +131,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull latest (picks up the PDF commit from the previous job)
-        run: git pull origin main
+        run: git pull --rebase origin main
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -179,7 +179,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull latest (picks up any bot commits from earlier jobs)
-        run: git pull origin main
+        run: git pull --rebase origin main
 
       - name: Set up Python
         uses: actions/setup-python@v5
