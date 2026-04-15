@@ -26,11 +26,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install openai
+        run: pip install anthropic
 
       - name: Run Vibe Check
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python .github/scripts/vibe_check.py
 
       - name: Commit & push VIBE_LOG.md

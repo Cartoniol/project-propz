@@ -2,7 +2,7 @@
 """
 VibeBot — AI commentary on every commit.
 
-Gets the latest commit message + diff, sends it to GPT-4o mini,
+Gets the latest commit message + diff, sends it to Claude Haiku,
 and prepends a witty vibe entry to VIBE_LOG.md.
 """
 
@@ -12,9 +12,9 @@ import sys
 from datetime import datetime
 
 try:
-    from openai import OpenAI
+    import anthropic
 except ImportError:
-    print("openai package not found. Run: pip install openai", file=sys.stderr)
+    print("anthropic package not found. Run: pip install anthropic", file=sys.stderr)
     sys.exit(1)
 
 VIBE_LOG = "VIBE_LOG.md"
@@ -45,8 +45,8 @@ def get_commit_info() -> tuple[str, str, str, str]:
     return message, author, changed_files, diff
 
 
-def call_openai(message: str, author: str, files: str, diff: str) -> str:
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+def call_claude(message: str, author: str, files: str, diff: str) -> str:
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     prompt = f"""You are VibeBot — a brutally honest, slightly sarcastic, but secretly supportive AI code reviewer.
 You have been given the latest git commit from a developer. Your job: write a short, witty "vibe check" — a personality-driven micro-review of the commit.
@@ -68,14 +68,13 @@ Diff (may be truncated):
 
 Write the vibe check now:"""
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
+    response = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=256,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=200,
-        temperature=0.85,
     )
 
-    return response.choices[0].message.content.strip()
+    return response.content[0].text.strip()
 
 
 def update_vibe_log(message: str, author: str, vibe_text: str) -> None:
@@ -95,7 +94,7 @@ def update_vibe_log(message: str, author: str, vibe_text: str) -> None:
         with open(VIBE_LOG, "r", encoding="utf-8") as f:
             existing = f.read()
 
-    header = "# VIBE_LOG\n\n*Automated AI commentary on every commit. Powered by VibeBot + GPT-4o mini.*\n\n---\n\n"
+    header = "# VIBE_LOG\n\n*Automated AI commentary on every commit. Powered by VibeBot + Claude Haiku.*\n\n---\n\n"
 
     if not existing.startswith("# VIBE_LOG"):
         existing = header + existing
@@ -112,9 +111,9 @@ def update_vibe_log(message: str, author: str, vibe_text: str) -> None:
 
 
 def main() -> None:
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("OPENAI_API_KEY is not set — skipping vibe check.", file=sys.stderr)
+        print("ANTHROPIC_API_KEY is not set — skipping vibe check.", file=sys.stderr)
         sys.exit(0)
 
     message, author, files, diff = get_commit_info()
@@ -124,7 +123,7 @@ def main() -> None:
         sys.exit(0)
 
     print(f"Checking vibe on: {message.splitlines()[0][:60]!r}")
-    vibe = call_openai(message, author, files, diff)
+    vibe = call_claude(message, author, files, diff)
     print(f"VibeBot says: {vibe}")
 
     update_vibe_log(message, author, vibe)
