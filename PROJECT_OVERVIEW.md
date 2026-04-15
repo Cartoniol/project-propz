@@ -2,6 +2,10 @@
 
 > This document is intended as a technical reference for reviewers who do not have access to the private repository. It describes the architecture, tooling, deployment strategy, and CI/CD pipeline of the project.
 
+> **💬 Don't want to read? Ask the doc.**
+> This repository includes a RAG-powered chat interface — ask questions about the architecture, stack, or pipelines in plain English:
+> **[project-propz-kl8m5a26jxaeqcqed6juym.streamlit.app](https://project-propz-kl8m5a26jxaeqcqed6juym.streamlit.app)**
+
 ---
 
 ## Why This Project Exists
