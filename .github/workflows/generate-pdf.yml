@@ -1,0 +1,43 @@
+name: Generate PDF
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - PROJECT_OVERVIEW.md
+
+jobs:
+  generate-pdf:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install pandoc + LaTeX
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-plain-generic
+
+      - name: Generate PDF
+        run: |
+          pandoc PROJECT_OVERVIEW.md \
+            --pdf-engine=xelatex \
+            --toc \
+            -V geometry:margin=1in \
+            -V fontsize=11pt \
+            -V mainfont="DejaVu Sans" \
+            -o PROJECT_OVERVIEW.pdf
+
+      - name: Commit PDF
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PROJECT_OVERVIEW.pdf
+          git diff --staged --quiet || git commit -m "chore: regenerate PROJECT_OVERVIEW.pdf [skip ci]"
+          git push
