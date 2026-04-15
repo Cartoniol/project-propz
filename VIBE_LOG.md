@@ -4,6 +4,17 @@
 
 ---
 
+## 15 April 2026, 08:19 UTC
+
+**Commit:** `added chat bot for interaction with project overview`  
+**Author:** Antonio Carlo Caruso
+
+> Antonio's built a legit RAG pipeline here — smart chunking at markdown boundaries, proper embedding normalization, and a GitHub Actions workflow that auto-rebuilds the vector store when docs change. The `build_embeddings.py` is clean and defensive (dependency checks, file validation, progress bars). Only minor gripe: no actual `chat/app.py` implementation visible in this diff, so we're halfway to "chatbot" — more like "chatbot infrastructure" right now. Still, solid foundation work.
+
+**7/10 — Promising Infrastructure**
+
+---
+
 ## 15 April 2026, 08:00 UTC
 
 **Commit:** `fix bug with vibe check pipeline, changed bot api`  
