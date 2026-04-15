@@ -14,7 +14,7 @@ Propaganza started as a collaborative project — a board game designed and buil
 
 **The entire codebase was developed with AI as a core collaborator.** I used AI throughout — from architecture decisions and code generation to debugging, documentation, and CI/CD design. What you see here isn't just a side project: it's my day-to-day evidence of how I work with AI to ship production-grade software faster and with more intentionality than I could alone.
 
-The result is a dual-app PWA (a score tracker + a marketing/rules site) built on Vue 3, deployed to Firebase via a fully automated GitHub Actions pipeline, served through Cloudflare, and maintained with a dual-version scheme that separates app releases from content releases. It's been running in production since 2024.
+The result is a dual-app PWA (a score tracker + a marketing/rules site) built on Vue 3, deployed to Firebase via a fully automated GitHub Actions pipeline, served through Cloudflare, and maintained with a dual-version scheme that separates app releases from content releases. It's been running in production since 2026.
 
 ---
 
@@ -474,9 +474,3 @@ This isn't a tutorial project or a portfolio toy — it's software that gets use
 ---
 
 *Document generated from source inspection of the private repository. Last updated: April 2026.*
-
-test pipeline generate-pdf 1
-test pipeline complete 1
-test pipeline complete + notify 1
-test pipeline complete + notification + release + versionig 1
-test pipeline complete + notification + release + versionig 2
