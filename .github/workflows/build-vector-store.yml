@@ -1,0 +1,46 @@
+name: Build Vector Store
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - PROJECT_OVERVIEW.md
+  workflow_dispatch:    # allow manual trigger for first-run bootstrap
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-all-MiniLM-L6-v2
+
+      - name: Install dependencies
+        run: pip install sentence-transformers numpy
+
+      - name: Build vector store
+        run: python .github/scripts/build_embeddings.py
+
+      - name: Commit vector store
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add chat/vector_store.json
+          git diff --staged --quiet || git commit -m "chore(rag): rebuild vector store [skip ci]"
+          git push
