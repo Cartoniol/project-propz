@@ -9,17 +9,29 @@ jobs:
   send-email:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          # Checkout at the commit that triggered CI, not the bot commits on top
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Pull latest (gets VERSION + all bot commits)
+        run: git pull origin ${{ github.event.workflow_run.head_branch }} || true
+
       - name: Build email body
         id: body
         run: |
-          RUN_URL="${{ github.event.workflow_run.html_url }}"
           CONCLUSION="${{ github.event.workflow_run.conclusion }}"
           SHA="${{ github.event.workflow_run.head_sha }}"
           SHORT_SHA="${SHA:0:7}"
           COMMIT_MSG="${{ github.event.workflow_run.head_commit.message }}"
           AUTHOR="${{ github.event.workflow_run.head_commit.author.name }}"
           RUN_NUMBER="${{ github.event.workflow_run.run_number }}"
+          RUN_URL="${{ github.event.workflow_run.html_url }}"
           REPO="${{ github.repository }}"
+          VERSION=$(cat VERSION 2>/dev/null || echo "—")
+
+          # Derive the release URL from the tag (may not exist yet if CI failed early)
+          RELEASE_URL="https://github.com/${REPO}/releases/tag/v${VERSION}"
 
           if [[ "$CONCLUSION" == "success" ]]; then
             STATUS_EMOJI="✅"
@@ -33,7 +45,6 @@ jobs:
             BADGE_COLOR="#b91c1c"
           fi
 
-          # Write the HTML body to a file (avoids quoting issues in GITHUB_OUTPUT)
           cat > /tmp/email_body.html << HTMLEOF
           <!DOCTYPE html>
           <html lang="en">
@@ -63,6 +74,10 @@ jobs:
                             <span style="background:${BADGE_COLOR};color:#fff;
                                          font-size:12px;font-weight:600;padding:3px 10px;
                                          border-radius:12px;">Run #${RUN_NUMBER}</span>
+                            &nbsp;
+                            <span style="background:#6b7280;color:#fff;
+                                         font-size:12px;font-weight:600;padding:3px 10px;
+                                         border-radius:12px;">v${VERSION}</span>
                           </td>
                         </tr>
                         <tr>
@@ -92,12 +107,18 @@ jobs:
                           </td>
                         </tr>
                         <tr>
-                          <td align="center">
+                          <td align="center" style="padding-bottom:12px;">
                             <a href="${RUN_URL}"
                                style="display:inline-block;background:${COLOR};color:#fff;
                                       text-decoration:none;font-weight:600;font-size:15px;
-                                      padding:12px 28px;border-radius:6px;">
+                                      padding:12px 28px;border-radius:6px;margin-right:8px;">
                               View Run →
+                            </a>
+                            <a href="${RELEASE_URL}"
+                               style="display:inline-block;background:#4b5563;color:#fff;
+                                      text-decoration:none;font-weight:600;font-size:15px;
+                                      padding:12px 28px;border-radius:6px;">
+                              Release ${VERSION} ↗
                             </a>
                           </td>
                         </tr>
@@ -120,7 +141,7 @@ jobs:
           </html>
           HTMLEOF
 
-          echo "subject=${STATUS_EMOJI} project-propz CI #${RUN_NUMBER} — ${STATUS_LABEL}" >> "$GITHUB_OUTPUT"
+          echo "subject=${STATUS_EMOJI} project-propz CI #${RUN_NUMBER} (v${VERSION}) — ${STATUS_LABEL}" >> "$GITHUB_OUTPUT"
 
       - name: Send notification email
         uses: dawidd6/action-send-mail@v3

@@ -3,32 +3,73 @@ name: CI
 on:
   push:
     branches: [main]
-  workflow_dispatch:   # manual bootstrap — forces a full PDF + RAG rebuild
+  workflow_dispatch:   # manual bootstrap — forces PDF + RAG rebuild
 
 jobs:
-  # ─── Detect which pipelines need to run ────────────────────────────────────
+  # ─── 1. Detect changes + bump version ──────────────────────────────────────
+  #
+  # Runs first. Determines what changed, bumps the VERSION file, and commits it
+  # so every downstream job can pull a clean, versioned branch tip.
+  #
+  # Bump rules:
+  #   PROJECT_OVERVIEW.md changed  → MAJOR + 1, reset MINOR to 0
+  #   anything else                → MINOR + 1
+  # ───────────────────────────────────────────────────────────────────────────
   changes:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
-      overview: ${{ steps.check.outputs.overview }}
+      version:           ${{ steps.bump.outputs.version }}
+      overview:          ${{ steps.bump.outputs.overview }}
+      pipelines_changed: ${{ steps.bump.outputs.pipelines_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Detect changed files
-        id: check
+      - name: Bump version and detect changes
+        id: bump
         run: |
-          # workflow_dispatch → always rebuild PDF + RAG (bootstrap use-case)
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
-             git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q '^PROJECT_OVERVIEW\.md$'; then
-            echo "overview=true" >> "$GITHUB_OUTPUT"
+          CURRENT=$(cat VERSION 2>/dev/null || echo "1.0")
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger: treat as overview change to force full rebuild
+            OVERVIEW_CHANGED=true
+            PIPELINES_CHANGED=false
+            NEW_VERSION="${MAJOR}.$((MINOR + 1))"
           else
-            echo "overview=false" >> "$GITHUB_OUTPUT"
+            CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+            OVERVIEW_CHANGED=false
+            PIPELINES_CHANGED=false
+
+            echo "$CHANGED" | grep -q '^PROJECT_OVERVIEW\.md$'         && OVERVIEW_CHANGED=true
+            echo "$CHANGED" | grep -qE '^\.github/(workflows|scripts)/' && PIPELINES_CHANGED=true
+
+            if [[ "$OVERVIEW_CHANGED" == "true" ]]; then
+              NEW_VERSION="$((MAJOR + 1)).0"
+            else
+              NEW_VERSION="${MAJOR}.$((MINOR + 1))"
+            fi
           fi
 
-  # ─── Pipeline 1: PDF Generation ────────────────────────────────────────────
+          echo "$NEW_VERSION" > VERSION
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git diff --staged --quiet || git commit -m "chore(version): bump to v${NEW_VERSION} [skip ci]"
+          git push
+
+          echo "version=${NEW_VERSION}"                >> "$GITHUB_OUTPUT"
+          echo "overview=${OVERVIEW_CHANGED}"          >> "$GITHUB_OUTPUT"
+          echo "pipelines_changed=${PIPELINES_CHANGED}" >> "$GITHUB_OUTPUT"
+
+  # ─── 2. PDF Generation ─────────────────────────────────────────────────────
   generate-pdf:
     needs: changes
     if: needs.changes.outputs.overview == 'true'
@@ -39,6 +80,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull latest (picks up VERSION commit)
+        run: git pull --rebase origin main
 
       - name: Install pandoc + LaTeX
         run: |
@@ -112,13 +156,13 @@ jobs:
 
       - name: Commit PDF
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add PROJECT_OVERVIEW.pdf
           git diff --staged --quiet || git commit -m "chore: regenerate PROJECT_OVERVIEW.pdf [skip ci]"
           git push
 
-  # ─── Pipeline 2: RAG Vector Store ──────────────────────────────────────────
+  # ─── 3. RAG Vector Store ───────────────────────────────────────────────────
   build-vector-store:
     needs: [changes, generate-pdf]
     if: needs.changes.outputs.overview == 'true'
@@ -130,7 +174,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull latest (picks up the PDF commit from the previous job)
+      - name: Pull latest (picks up PDF commit)
         run: git pull --rebase origin main
 
       - name: Set up Python
@@ -152,18 +196,59 @@ jobs:
 
       - name: Commit vector store
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add chat/vector_store.json
           git diff --staged --quiet || git commit -m "chore(rag): rebuild vector store [skip ci]"
           git push
 
-  # ─── Pipeline 3: AI Vibe Check ─────────────────────────────────────────────
-  vibe-check:
+  # ─── 4. Auto-update PIPELINES.md ──────────────────────────────────────────
+  #
+  # Fires only when workflow files or CI scripts change.
+  # Claude reads every .yml + .py under .github/ and rewrites PIPELINES.md.
+  # ───────────────────────────────────────────────────────────────────────────
+  update-pipelines:
     needs: [changes, generate-pdf, build-vector-store]
-    # always() lets this job run even when generate-pdf / build-vector-store were
-    # skipped (i.e. when PROJECT_OVERVIEW.md was NOT the file that changed).
-    # Skip on workflow_dispatch — there is no meaningful user commit to review.
+    if: >-
+      always() &&
+      github.actor != 'github-actions[bot]' &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.pipelines_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull latest
+        run: git pull --rebase origin main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Regenerate PIPELINES.md
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python .github/scripts/update_pipelines.py
+
+      - name: Commit PIPELINES.md
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PIPELINES.md
+          git diff --staged --quiet || git commit -m "docs(pipelines): auto-update PIPELINES.md [skip ci]"
+          git push
+
+  # ─── 5. AI Vibe Check ──────────────────────────────────────────────────────
+  vibe-check:
+    needs: [changes, generate-pdf, build-vector-store, update-pipelines]
     if: >-
       always() &&
       github.actor != 'github-actions[bot]' &&
@@ -175,10 +260,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2          # need parent commit for git diff SHA~1
+          fetch-depth: 2
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull latest (picks up any bot commits from earlier jobs)
+      - name: Pull latest (picks up all bot commits from earlier jobs)
         run: git pull --rebase origin main
 
       - name: Set up Python
@@ -192,15 +277,187 @@ jobs:
       - name: Run Vibe Check
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Pass the original user-commit SHA so vibe_check.py always diffs
-          # the correct commit even after git pull advanced HEAD past bot commits.
+          # Pin to the original user commit so we always diff the right change,
+          # not the bot commits that git pull brought in above.
           ORIGINAL_SHA: ${{ github.sha }}
         run: python .github/scripts/vibe_check.py
 
-      - name: Commit & push VIBE_LOG.md
+      - name: Commit VIBE_LOG.md
         run: |
-          git config user.name "VibeBot"
+          git config user.name  "VibeBot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add VIBE_LOG.md
           git diff --staged --quiet || git commit -m "chore(vibe): AI vibe check [skip ci]"
           git push
+
+  # ─── 6. Generate release PDFs ─────────────────────────────────────────────
+  #
+  # Converts VIBE_LOG.md and PIPELINES.md to PDF after the vibe check has
+  # committed its entry. PDFs are ephemeral — uploaded as Actions artifacts
+  # and downloaded by create-release. Nothing is committed to the repo.
+  # ───────────────────────────────────────────────────────────────────────────
+  generate-docs-pdfs:
+    needs: [changes, generate-pdf, build-vector-store, update-pipelines, vibe-check]
+    if: >-
+      always() &&
+      github.actor != 'github-actions[bot]' &&
+      github.event_name == 'push' &&
+      needs.changes.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull latest (gets updated VIBE_LOG.md and PIPELINES.md)
+        run: git pull --rebase origin main
+
+      - name: Install pandoc + LaTeX
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y pandoc texlive-xetex texlive-fonts-recommended texlive-plain-generic
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install mermaid-cli
+        run: npm install -g @mermaid-js/mermaid-cli
+
+      - name: Pre-process PIPELINES.md (Mermaid blocks → PNG)
+        run: |
+          cat > puppeteer-config.json << 'JSON'
+          {"args": ["--no-sandbox", "--disable-setuid-sandbox"]}
+          JSON
+
+          python3 << 'PYEOF'
+          import re, subprocess, sys
+          from pathlib import Path
+
+          content = Path("PIPELINES.md").read_text(encoding="utf-8")
+          pattern = r'```mermaid\n(.*?)\n```'
+          matches = list(re.finditer(pattern, content, re.DOTALL))
+
+          if not matches:
+              Path("PIPELINES_processed.md").write_text(content, encoding="utf-8")
+              print("No Mermaid diagrams found.")
+              sys.exit(0)
+
+          for i, match in enumerate(matches):
+              mmd_file = f"pl_diagram_{i}.mmd"
+              png_file  = f"pl_diagram_{i}.png"
+              Path(mmd_file).write_text(match.group(1), encoding="utf-8")
+              result = subprocess.run(
+                  ["mmdc", "-i", mmd_file, "-o", png_file,
+                   "--puppeteerConfigFile", "puppeteer-config.json"],
+                  capture_output=True, text=True
+              )
+              if result.returncode != 0:
+                  print(f"Error: {result.stderr}", file=sys.stderr)
+                  sys.exit(1)
+              content = content.replace(match.group(0), f"![Diagram {i+1}]({png_file})", 1)
+              print(f"Converted diagram {i+1} → {png_file}")
+
+          Path("PIPELINES_processed.md").write_text(content, encoding="utf-8")
+          print(f"Done — {len(matches)} diagram(s) converted.")
+          PYEOF
+
+      - name: Convert to PDF
+        run: |
+          PANDOC_OPTS="--pdf-engine=xelatex --toc -V geometry:margin=1in -V fontsize=11pt -V mainfont=DejaVu Sans"
+
+          pandoc PIPELINES_processed.md $PANDOC_OPTS -o PIPELINES.pdf
+          pandoc VIBE_LOG.md            $PANDOC_OPTS -o VIBE_LOG.pdf
+
+          echo "Generated PIPELINES.pdf ($(du -h PIPELINES.pdf | cut -f1))"
+          echo "Generated VIBE_LOG.pdf  ($(du -h VIBE_LOG.pdf  | cut -f1))"
+
+      - name: Upload PDFs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-pdfs
+          path: |
+            PIPELINES.pdf
+            VIBE_LOG.pdf
+          retention-days: 1
+
+  # ─── 7. Create GitHub Release ──────────────────────────────────────────────
+  #
+  # Tags the repo at v{MAJOR.MINOR} and attaches all three PDFs plus the raw
+  # markdown files. Recreates the release+tag if they already exist.
+  # ───────────────────────────────────────────────────────────────────────────
+  create-release:
+    needs: [changes, generate-pdf, build-vector-store, update-pipelines, vibe-check, generate-docs-pdfs]
+    if: >-
+      always() &&
+      github.actor != 'github-actions[bot]' &&
+      github.event_name == 'push' &&
+      needs.changes.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull all bot commits (PDF, vector store, PIPELINES, vibe log)
+        run: git pull --rebase origin main
+
+      - name: Download ephemeral PDFs
+        uses: actions/download-artifact@v4
+        with:
+          name: release-pdfs
+          path: ./release-pdfs
+        continue-on-error: true   # don't fail release if PDF job was skipped
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.changes.outputs.version }}"
+          TAG="v${VERSION}"
+          COMMIT_MSG=$(git log -1 --pretty=%s "${{ github.sha }}")
+
+          # Extract the latest vibe entry for the release body
+          VIBE=$(python3 - << 'EOF'
+          import re
+          try:
+              content = open("VIBE_LOG.md", encoding="utf-8").read()
+              parts = re.split(r"\n---\n", content)
+              print(parts[1].strip() if len(parts) > 1 else "_No vibe check recorded yet._")
+          except Exception:
+              print("_No vibe check recorded yet._")
+          EOF
+          )
+
+          NOTES=$(cat << NOTES_EOF
+          ## v${VERSION}
+
+          **Commit:** \`${COMMIT_MSG}\`
+
+          ### Latest Vibe Check
+
+          ${VIBE}
+
+          ---
+          *Generated automatically by project-propz CI*
+          NOTES_EOF
+          )
+
+          # Remove existing release + tag so this run is always authoritative
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push origin --delete "$TAG"  2>/dev/null || true
+
+          # Collect every artifact that actually exists
+          ATTACH=()
+          [ -f "PROJECT_OVERVIEW.pdf" ]         && ATTACH+=("PROJECT_OVERVIEW.pdf")
+          [ -f "release-pdfs/PIPELINES.pdf" ]   && ATTACH+=("release-pdfs/PIPELINES.pdf")
+          [ -f "release-pdfs/VIBE_LOG.pdf" ]    && ATTACH+=("release-pdfs/VIBE_LOG.pdf")
+          [ -f "PROJECT_OVERVIEW.md" ]          && ATTACH+=("PROJECT_OVERVIEW.md")
+          [ -f "PIPELINES.md" ]                 && ATTACH+=("PIPELINES.md")
+          [ -f "VIBE_LOG.md" ]                  && ATTACH+=("VIBE_LOG.md")
+
+          gh release create "$TAG" \
+            --title "${TAG} — ${COMMIT_MSG}" \
+            --notes "${NOTES}" \
+            "${ATTACH[@]}"
