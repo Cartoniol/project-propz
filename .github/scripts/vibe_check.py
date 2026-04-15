@@ -29,13 +29,18 @@ def run(cmd: str) -> str:
 
 
 def get_commit_info() -> tuple[str, str, str, str]:
-    message = run("git log -1 --pretty=%B")
-    author = run("git log -1 --pretty=%an")
-    changed_files = run("git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD")
+    # In the sequential CI workflow, git pull may have advanced HEAD past bot
+    # commits (PDF regen, vector store rebuild).  ORIGINAL_SHA pins us to the
+    # actual user commit so we always diff the right thing.
+    sha = os.environ.get("ORIGINAL_SHA", "HEAD")
+
+    message = run(f"git log -1 --pretty=%B {sha}")
+    author = run(f"git log -1 --pretty=%an {sha}")
+    changed_files = run(f"git diff --name-only {sha}~1 {sha} 2>/dev/null || git diff --name-only {sha}")
 
     # Build exclude flags for binary/generated files
     excludes = " ".join(f"':(exclude){p}'" for p in DIFF_EXCLUDES)
-    diff = run(f"git diff HEAD~1 HEAD -- . {excludes} 2>/dev/null || git show --stat HEAD")
+    diff = run(f"git diff {sha}~1 {sha} -- . {excludes} 2>/dev/null || git show --stat {sha}")
 
     diff_lines = diff.splitlines()
     if len(diff_lines) > MAX_DIFF_LINES:

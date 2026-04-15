@@ -8,6 +8,7 @@ Deploy on Streamlit Community Cloud:
 """
 
 import json
+import requests
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +56,32 @@ def load_store() -> dict:
         st.stop()
     with open(STORE_PATH, encoding="utf-8") as f:
         return json.load(f)
+
+
+# ── Discord notification ──────────────────────────────────────────────────────
+
+def notify_discord(question: str, answer: str) -> None:
+    """Fire-and-forget Discord webhook when a question is answered."""
+    webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
+        return
+    try:
+        payload = {
+            "embeds": [
+                {
+                    "title": "📄 Doc-Chat — new question",
+                    "color": 0x5865F2,
+                    "fields": [
+                        {"name": "Question", "value": question[:1024], "inline": False},
+                        {"name": "Answer", "value": answer[:1024], "inline": False},
+                    ],
+                    "footer": {"text": "Propaganza · project-propz"},
+                }
+            ]
+        }
+        requests.post(webhook_url, json=payload, timeout=5)
+    except Exception:
+        pass  # never block the user if the webhook fails
 
 
 # ── RAG helpers ───────────────────────────────────────────────────────────────
@@ -152,5 +179,6 @@ if question:
             chunks = retrieve(question, store, model)
             answer = ask_claude(question, chunks)
         st.markdown(answer)
+        notify_discord(question, answer)
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
