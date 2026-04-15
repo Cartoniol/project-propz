@@ -1,6 +1,6 @@
 # CI/CD Pipelines — project-propz
 
-This repository runs a fully automated, sequential GitHub Actions CI/CD pipeline with seven integrated jobs. The pipeline detects changes, bumps versions, regenerates documentation and embeddings, updates pipeline documentation, runs an AI vibe check, generates release PDFs, and creates a GitHub release—all protected by comprehensive loop-prevention guards.
+This repository runs a fully automated, sequential GitHub Actions CI/CD pipeline with seven integrated jobs spanning two workflows. The pipeline detects changes, bumps versions, regenerates documentation and embeddings, updates pipeline documentation, runs an AI vibe check, generates release PDFs, and creates a GitHub release—all protected by comprehensive loop-prevention guards.
 
 ---
 
@@ -8,78 +8,144 @@ This repository runs a fully automated, sequential GitHub Actions CI/CD pipeline
 
 1. [Overview](#overview)
 2. [Pipeline Architecture](#pipeline-architecture)
-3. [Job 1 — Version Bump & Change Detection](#job-1--version-bump--change-detection)
-4. [Job 2 — PDF Generation](#job-2--pdf-generation)
-5. [Job 3 — RAG Vector Store](#job-3--rag-vector-store)
-6. [Job 4 — Auto-Update PIPELINES.md](#job-4--auto-update-pipelinesmd)
-7. [Job 5 — AI Vibe Check](#job-5--ai-vibe-check)
-8. [Job 6 — Generate Release PDFs](#job-6--generate-release-pdfs)
-9. [Job 7 — Create GitHub Release](#job-7--create-github-release)
-10. [Notify Workflow](#notify-workflow)
-11. [Trigger Matrix](#trigger-matrix)
-12. [Secrets Reference](#secrets-reference)
-13. [Loop Prevention Strategy](#loop-prevention-strategy)
+3. [Mermaid Architecture Diagram](#mermaid-architecture-diagram)
+4. [Job 1 — Version Bump & Change Detection](#job-1--version-bump--change-detection)
+5. [Job 2 — PDF Generation](#job-2--pdf-generation)
+6. [Job 3 — RAG Vector Store](#job-3--rag-vector-store)
+7. [Job 4 — Auto-Update PIPELINES.md](#job-4--auto-update-pipelinesmd)
+8. [Job 5 — AI Vibe Check](#job-5--ai-vibe-check)
+9. [Job 6 — Generate Release PDFs](#job-6--generate-release-pdfs)
+10. [Job 7 — Create GitHub Release](#job-7--create-github-release)
+11. [Notify Workflow](#notify-workflow)
+12. [Trigger Matrix](#trigger-matrix)
+13. [Secrets Reference](#secrets-reference)
+14. [Loop Prevention Strategy](#loop-prevention-strategy)
 
 ---
 
 ## Overview
 
-```mermaid
-graph TD
-    A["push to main OR workflow_dispatch"] --> B["changes: Bump Version<br/>Detect file changes"]
-    
-    B -->|"overview changed"| C["generate-pdf:<br/>MD → PNG → PDF"]
-    B -->|"overview changed"| D["build-vector-store:<br/>Embed & chunk"]
-    B -->|"any push"| E["(downstream jobs<br/>depend on changes)"]
-    
-    C -->|"success"| F["update-pipelines:<br/>Regenerate PIPELINES.md<br/>IF pipelines_changed"]
-    D -->|"success"| F
-    
-    F -->|"always"| G["vibe-check:<br/>Claude reviews diff"]
-    
-    G -->|"always"| H["generate-docs-pdfs:<br/>Mermaid → PNG → PDF<br/>VIBE_LOG, PIPELINES"]
-    
-    H -->|"always"| I["create-release:<br/>Tag & attach artifacts"]
-    
-    I -.->|"workflow_run.completed"| J["notify: Email on<br/>success/failure"]
-    
-    style B fill:#e3f2fd
-    style C fill:#f3e5f5
-    style D fill:#e8f5e9
-    style F fill:#fff3e0
-    style G fill:#fce4ec
-    style H fill:#f1f8e9
-    style I fill:#e0f2f1
-    style J fill:#ede7f6
-```
+The CI/CD system comprises two GitHub Actions workflows:
+
+- **`ci.yml`** — Main pipeline: version detection, PDF/embedding generation, documentation updates, AI review, and release creation
+- **`notify.yml`** — Notification handler: sends formatted emails on CI completion
+
+All jobs enforce a **no-bot-loop constraint** via `if: github.actor != 'github-actions[bot]'` guards, preventing infinite recursion when the bot commits changes back to the repository.
 
 ---
 
 ## Pipeline Architecture
 
-The CI workflow (`ci.yml`) is **sequential but optimized**: jobs wait for their dependencies, but parallel execution is maximized where possible. The key principle is that **every job commits back to the repository**, so each downstream job uses `git pull --rebase` to pick up upstream commits before running.
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Trigger: push to main OR workflow_dispatch                      │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+        ┌────────────────────────────────┐
+        │ Job 1: changes                 │
+        │ • Detect file changes          │
+        │ • Bump VERSION                 │
+        │ • Commit + push                │
+        └────┬────────────┬──────────────┘
+             │            │
+     overview│ changed    │ pipelines_changed
+             │            │
+             ▼            ▼
+    ┌──────────────┐  ┌─────────────┐
+    │ Job 2: PDF   │  │ Job 3: RAG  │  (parallel if overview=true)
+    │ • Mermaid→   │  │ • Embed     │
+    │   PNG→PDF    │  │ • Chunks    │
+    │ • Commit     │  │ • Commit    │
+    └──────┬───────┘  └─────┬───────┘
+           │                │
+           └────────┬───────┘
+                    │ (both success or skip)
+                    ▼
+        ┌──────────────────────────────┐
+        │ Job 4: update-pipelines      │
+        │ (only if pipelines_changed)  │
+        │ • Read .github/*.yml/py      │
+        │ • Claude → regenerate        │
+        │   PIPELINES.md               │
+        │ • Commit                     │
+        └────────┬─────────────────────┘
+                 │
+                 ▼
+        ┌──────────────────────────────┐
+        │ Job 5: vibe-check            │
+        │ • Read original commit diff  │
+        │ • Claude → witty review      │
+        │ • Append VIBE_LOG.md         │
+        │ • Commit                     │
+        └────────┬─────────────────────┘
+                 │
+                 ▼
+        ┌──────────────────────────────┐
+        │ Job 6: generate-docs-pdfs    │
+        │ • Mermaid→PNG in PIPELINES   │
+        │ • pandoc → PIPELINES.pdf     │
+        │ • pandoc → VIBE_LOG.pdf      │
+        │ • Upload as artifact (1 day) │
+        └────────┬─────────────────────┘
+                 │
+                 ▼
+        ┌──────────────────────────────┐
+        │ Job 7: create-release        │
+        │ • Download ephemeral PDFs    │
+        │ • Tag v{VERSION}             │
+        │ • Attach .md + .pdf files    │
+        │ • gh release create          │
+        └──────────────────────────────┘
+                 │
+                 ▼ (workflow_run.completed event)
+        ┌──────────────────────────────┐
+        │ notify.yml: send-email       │
+        │ • Build HTML body            │
+        │ • SMTP → email notification  │
+        └──────────────────────────────┘
+```
 
-**Execution order:**
+---
 
-1. `changes` — first job, always runs (unless pusher is bot)
-2. `generate-pdf` + `build-vector-store` — parallel, if overview changed
-3. `update-pipelines` — after PDF + vector store, if pipeline files changed
-4. `vibe-check` — always, depends on all prior jobs
-5. `generate-docs-pdfs` — always, depends on vibe check
-6. `create-release` — always, depends on everything
-7. `notify` (separate workflow) — triggered after CI completes
+## Mermaid Architecture Diagram
 
-**Key constraint:** All jobs run on `ubuntu-latest` with `contents: write` permissions to commit artifacts. The `GITHUB_TOKEN` is automatically provisioned and rotated by GitHub.
+```mermaid
+graph TD
+    A["push to main OR<br/>workflow_dispatch"] --> B["Job 1: changes<br/>Bump VERSION<br/>Detect files"]
+    
+    B -->|"overview == true"| C["Job 2: generate-pdf<br/>Mermaid→PNG→PDF"]
+    B -->|"overview == true"| D["Job 3: build-vector-store<br/>Chunk & embed"]
+    
+    C --> E["Job 4: update-pipelines<br/>IF pipelines_changed"]
+    D --> E
+    
+    E --> F["Job 5: vibe-check<br/>Claude diff review"]
+    
+    F --> G["Job 6: generate-docs-pdfs<br/>PIPELINES + VIBE_LOG→PDF"]
+    
+    G --> H["Job 7: create-release<br/>Tag & attach artifacts"]
+    
+    H -.->|"workflow_run.completed"| I["notify.yml: send-email<br/>SMTP notification"]
+    
+    style A fill:#e3f2fd
+    style B fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    style C fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style D fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    style E fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style F fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    style G fill:#f1f8e9,stroke:#689f38,stroke-width:2px
+    style H fill:#e0f2f1,stroke:#00796b,stroke-width:2px
+    style I fill:#ede7f6,stroke:#512da8,stroke-width:2px
+```
 
 ---
 
 ## Job 1 — Version Bump & Change Detection
 
-**File:** `.github/workflows/ci.yml` → `changes` job
-
-### Responsibility
-
-Runs first on every push. Reads the current `VERSION` file, detects which files changed, bumps the version according to rules, and commits the new version so downstream jobs always pull a clean, versioned tip.
+**File:** `.github/workflows/ci.yml`  
+**Job ID:** `changes`  
+**Key Outputs:** `version`, `overview`, `pipelines_changed`
 
 ### Trigger
 
@@ -90,65 +156,73 @@ on:
   workflow_dispatch
 ```
 
-Runs on any push to `main` or manual trigger. Skips if the pusher is `github-actions[bot]` (via `if: github.actor != 'github-actions[bot]'`).
+Fires on any push to `main` or manual trigger. **Always runs first**, but exits early if the pusher is `github-actions[bot]`.
 
 ### Bump Rules
 
-| Condition | Bump Rule |
+| Condition | Action |
 |---|---|
-| `workflow_dispatch` (manual trigger) | MINOR + 1 (triggers full rebuild) |
-| `PROJECT_OVERVIEW.md` changed | MAJOR + 1, reset MINOR to 0 |
-| Any other file changed | MINOR + 1 |
+| `workflow_dispatch` (manual trigger) | MINOR + 1; OVERVIEW_CHANGED=false, PIPELINES_CHANGED=false |
+| `PROJECT_OVERVIEW.md` changed | MAJOR + 1, MINOR reset to 0; OVERVIEW_CHANGED=true |
+| `.github/workflows/*` or `.github/scripts/*` changed | MINOR + 1; PIPELINES_CHANGED=true |
+| All other changes | MINOR + 1 |
 
-### Steps
-
-```
-1. Checkout with fetch-depth: 2 (needed for git diff HEAD~1)
-2. Detect file changes via git diff HEAD~1 HEAD
-3. Parse current VERSION (default 1.0 if missing)
-4. Calculate new version per bump rules
-5. Write new VERSION file
-6. git config + git commit [skip ci] + git push
-```
-
-### Key Logic
+### Key Steps
 
 ```bash
-# Determine what changed
-if workflow_dispatch:
-  OVERVIEW_CHANGED = false (manual trigger treats as full rebuild)
-  PIPELINES_CHANGED = false
-  NEW_VERSION = MAJOR.MINOR+1
+# 1. Read current version
+CURRENT=$(cat VERSION 2>/dev/null || echo "1.0")
+MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+MINOR=$(echo "$CURRENT" | cut -d. -f2)
+
+# 2. Detect what changed
+if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+  OVERVIEW_CHANGED=true
+  PIPELINES_CHANGED=false
+  NEW_VERSION="${MAJOR}.$((MINOR + 1))"
 else
-  git diff --name-only HEAD~1 HEAD
-  grep for PROJECT_OVERVIEW.md → OVERVIEW_CHANGED
-  grep for .github/(workflows|scripts)/ → PIPELINES_CHANGED
+  CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
   
-  if OVERVIEW_CHANGED:
-    NEW_VERSION = MAJOR+1.0
-  else:
-    NEW_VERSION = MAJOR.MINOR+1
+  echo "$CHANGED" | grep -q '^PROJECT_OVERVIEW\.md$'         && OVERVIEW_CHANGED=true
+  echo "$CHANGED" | grep -qE '^\.github/(workflows|scripts)/' && PIPELINES_CHANGED=true
+  
+  if [[ "$OVERVIEW_CHANGED" == "true" ]]; then
+    NEW_VERSION="$((MAJOR + 1)).0"
+  else
+    NEW_VERSION="${MAJOR}.$((MINOR + 1))"
+  fi
+fi
+
+# 3. Commit + push
+echo "$NEW_VERSION" > VERSION
+git config user.name "github-actions[bot]"
+git config user.email "github-actions[bot]@users.noreply.github.com"
+git add VERSION
+git commit -m "chore(version): bump to v${NEW_VERSION} [skip ci]"
+git push
+
+# 4. Export outputs
+echo "version=${NEW_VERSION}"           >> "$GITHUB_OUTPUT"
+echo "overview=${OVERVIEW_CHANGED}"     >> "$GITHUB_OUTPUT"
+echo "pipelines_changed=${PIPELINES_CHANGED}" >> "$GITHUB_OUTPUT"
 ```
 
-### Outputs
+### Output Artifacts
 
-| Output | Example | Used By |
-|---|---|---|
-| `version` | `1.3` | All downstream jobs, release creation |
-| `overview` | `true` / `false` | PDF, vector store (conditional trigger) |
-| `pipelines_changed` | `true` / `false` | Update PIPELINES (conditional trigger) |
+| Output | Type | Example | Used By |
+|---|---|---|---|
+| `version` | String | `1.3` | All downstream, release tag |
+| `overview` | Boolean | `true` / `false` | PDF, RAG (conditional) |
+| `pipelines_changed` | Boolean | `true` / `false` | PIPELINES.md update (conditional) |
 
 ---
 
 ## Job 2 — PDF Generation
 
-**File:** `.github/workflows/ci.yml` → `generate-pdf` job  
+**File:** `.github/workflows/ci.yml`  
+**Job ID:** `generate-pdf`  
 **Input:** `PROJECT_OVERVIEW.md`  
-**Output:** `PROJECT_OVERVIEW.pdf`
-
-### Responsibility
-
-Converts `PROJECT_OVERVIEW.md` into a print-ready PDF with embedded diagram images. All Mermaid code blocks are rendered to high-resolution PNGs via `@mermaid-js/mermaid-cli` before pandoc assembles the PDF.
+**Output:** `PROJECT_OVERVIEW.pdf` (committed)
 
 ### Trigger
 
@@ -157,33 +231,46 @@ needs: changes
 if: needs.changes.outputs.overview == 'true'
 ```
 
-Only runs if `changes` job detected `PROJECT_OVERVIEW.md` changed. Skipped for other pushes.
+Runs after `changes` job completes **only if** `overview` output is `true`.
 
 ### Steps
 
+1. **Checkout** with `GITHUB_TOKEN`
+2. **Pull latest** — `git pull --rebase origin main` (picks up VERSION bump)
+3. **Install tools** — pandoc, texlive-xetex, texlive-fonts-recommended, texlive-plain-generic
+4. **Setup Node.js 20** and `npm install -g @mermaid-js/mermaid-cli`
+5. **Convert Mermaid diagrams to PNG** — embedded Python script
+6. **Generate PDF** via pandoc XeLaTeX
+7. **Commit + push** — `PROJECT_OVERVIEW.pdf` with `[skip ci]` tag
+
+### Mermaid → PNG Conversion
+
+Embedded Python script in step 5:
+
+```python
+import re, subprocess
+pattern = r'```mermaid\n(.*?)\n```'
+matches = list(re.finditer(pattern, content, re.DOTALL))
+
+for i, match in enumerate(matches):
+    mmd_file = f'diagram_{i}.mmd'
+    png_file = f'diagram_{i}.png'
+    
+    with open(mmd_file, 'w', encoding='utf-8') as f:
+        f.write(match.group(1))
+    
+    subprocess.run([
+        'mmdc', '-i', mmd_file, '-o', png_file,
+        '--puppeteerConfigFile', 'puppeteer-config.json'
+    ])
+    
+    content = content.replace(match.group(0), f'![Diagram {i+1}]({png_file})', 1)
+
+with open('PROJECT_OVERVIEW_processed.md', 'w', encoding='utf-8') as f:
+    f.write(content)
 ```
-1. Checkout (with GITHUB_TOKEN for potential writes)
-2. git pull --rebase origin main (picks up VERSION bump from changes job)
-3. Install pandoc + texlive-xetex + texlive-fonts-recommended
-4. Set up Node.js 20
-5. npm install -g @mermaid-js/mermaid-cli
-6. Convert all ```mermaid``` blocks → PNG
-7. pandoc PROJECT_OVERVIEW_processed.md → PDF
-8. git commit PROJECT_OVERVIEW.pdf [skip ci] + push
-```
 
-### Mermaid Conversion Detail
-
-An embedded Python script:
-
-1. Reads `PROJECT_OVERVIEW.md`, finds all ` ```mermaid ``` ` blocks via regex `r'```mermaid\n(.*?)\n```'`
-2. Writes each block to a temporary `.mmd` file
-3. Calls `mmdc -i diagram_N.mmd -o diagram_N.png --puppeteerConfigFile puppeteer-config.json`
-4. Replaces the code block with `![Diagram N](diagram_N.png)`
-5. Writes result to `PROJECT_OVERVIEW_processed.md`
-6. If no Mermaid blocks found, passes original through unchanged
-
-Puppeteer config suppresses sandbox errors in GitHub's runner:
+Puppeteer config suppresses sandbox errors in GitHub runner:
 ```json
 {"args": ["--no-sandbox", "--disable-setuid-sandbox"]}
 ```
@@ -200,29 +287,26 @@ pandoc PROJECT_OVERVIEW_processed.md \
   -o PROJECT_OVERVIEW.pdf
 ```
 
-XeLaTeX is chosen for native UTF-8 support and system font access.
+**Rationale:** XeLaTeX supports native UTF-8 and system fonts. DejaVu Sans renders cleanly on all platforms.
 
 ### Artifacts
 
-| File | Status | Purpose |
+| File | Status | Lifetime |
 |---|---|---|
-| `diagram_N.mmd` | Ephemeral | Temporary Mermaid source |
-| `diagram_N.png` | Ephemeral | Temporary diagram image |
-| `PROJECT_OVERVIEW_processed.md` | Ephemeral | Intermediate markdown |
-| `PROJECT_OVERVIEW.pdf` | **Committed** | Final deliverable |
+| `diagram_N.mmd` | Ephemeral | Cleaned up after PNG conversion |
+| `diagram_N.png` | Ephemeral | Embedded in PDF, not committed |
+| `PROJECT_OVERVIEW_processed.md` | Ephemeral | Intermediate file, not committed |
+| **`PROJECT_OVERVIEW.pdf`** | **Committed** | Permanent in repo |
 
 ---
 
 ## Job 3 — RAG Vector Store
 
-**File:** `.github/workflows/ci.yml` → `build-vector-store` job  
+**File:** `.github/workflows/ci.yml`  
+**Job ID:** `build-vector-store`  
 **Script:** `.github/scripts/build_embeddings.py`  
 **Input:** `PROJECT_OVERVIEW.md`  
-**Output:** `chat/vector_store.json`
-
-### Responsibility
-
-Chunks `PROJECT_OVERVIEW.md` at semantic boundaries (headers), embeds each chunk with `all-MiniLM-L6-v2` via sentence-transformers, and commits a JSON vector store for use by the Streamlit Doc-Chat app.
+**Output:** `chat/vector_store.json` (committed)
 
 ### Trigger
 
@@ -231,186 +315,59 @@ needs: [changes, generate-pdf]
 if: needs.changes.outputs.overview == 'true'
 ```
 
-Runs after PDF generation completes (picks up VERSION), only if overview changed.
+Runs after both `changes` and `generate-pdf` complete, **only if** `overview` is `true`. This ensures PDF is ready and VERSION is bumped.
 
 ### Steps
 
-```
-1. Checkout (with GITHUB_TOKEN)
-2. git pull --rebase origin main (picks up all prior commits)
-3. Set up Python 3.11
-4. Cache ~/.cache/huggingface (key: hf-ubuntu-all-MiniLM-L6-v2)
-5. pip install sentence-transformers numpy
-6. python .github/scripts/build_embeddings.py
-7. git commit chat/vector_store.json [skip ci] + push
-```
+1. **Checkout** with `GITHUB_TOKEN`
+2. **Pull latest** — `git pull --rebase origin main`
+3. **Setup Python 3.11**
+4. **Cache Hugging Face models** — `~/.cache/huggingface` (key: `hf-ubuntu-all-MiniLM-L6-v2`)
+5. **Install dependencies** — `pip install sentence-transformers numpy`
+6. **Build vector store** — `python .github/scripts/build_embeddings.py`
+7. **Commit + push** — `chat/vector_store.json` with `[skip ci]` tag
 
 ### Chunking Strategy
 
-**Input:** Raw `PROJECT_OVERVIEW.md`
-
-```
-1. Split at H1/H2/H3 header boundaries (regex: (?=^#{1,3} ))
-   └─ Each section becomes a candidate chunk
-
-2. Filter chunks < 60 characters (empty/separator blocks)
-
-3. Split long chunks (> 1200 chars) further at blank lines
-   └─ Prevents individual chunks from overwhelming embedding context
-```
-
-**Output:** List of semantic chunks, each ~ 200–1200 characters.
-
-### Embedding
-
 ```python
-model = SentenceTransformer('all-MiniLM-L6-v2')
-embeddings = model.encode(chunks, normalize_embeddings=True)
-# Result: N × 384 array, each row L2-normalized
+def chunk_markdown(text: str) -> list[str]:
+    """Split markdown at H1/H2/H3 boundaries, then by blank lines for long chunks."""
+    
+    # Step 1: Split at header boundaries
+    pattern = r"(?=^#{1,3} )"
+    raw_chunks = re.split(pattern, text, flags=re.MULTILINE)
+    
+    chunks: list[str] = []
+    for raw in raw_chunks:
+        raw = raw.strip()
+        
+        # Step 2: Skip empty/tiny blocks
+        if not raw or len(raw) < 60:
+            continue
+        
+        # Step 3: Keep short chunks as-is
+        if len(raw) <= CHUNK_MAX_CHARS:  # 1200 chars
+            chunks.append(raw)
+            continue
+        
+        # Step 4: Split long chunks at blank lines
+        current = ""
+        for para in re.split(r"\n{2,}", raw):
+            if len(current) + len(para) > CHUNK_MAX_CHARS and current:
+                chunks.append(current.strip())
+                current = para
+            else:
+                current = (current + "\n\n" + para) if current else para
+        if current.strip():
+            chunks.append(current.strip())
+    
+    return chunks
 ```
+
+**Result:** Each chunk is 60–1200 characters, optimized for semantic coherence and embedding context limits.
+
+### Embedding Model
 
 | Property | Value |
 |---|---|
-| Model | `all-MiniLM-L6-v2` from Hugging Face |
-| Dimensions | 384 |
-| Normalization | L2 (pre-normalized) |
-| Cost | Free (runs on CI runner, no API call) |
-| Cache | ~/.cache/huggingface (~90 MB after first run) |
-
-### `vector_store.json` Schema
-
-```json
-{
-  "model": "all-MiniLM-L6-v2",
-  "generated_at": "2026-04-15T14:32:00+00:00",
-  "source": "PROJECT_OVERVIEW.md",
-  "chunks": [
-    {
-      "id": 0,
-      "text": "## Overview\n\nThis repository...",
-      "embedding": [0.042, -0.118, 0.033, ...]
-    }
-  ]
-}
-```
-
-Typical size: 120–200 KB for a 500-line markdown document.
-
-### RAG Query Flow
-
-```
-User: "What is the game?"
-  ↓
-Embed query with all-MiniLM-L6-v2 (same model, loaded at app startup)
-  ↓
-Dot-product similarity: query_embedding · chunk_embedding[T]
-  ↓
-Select top 4 chunks (by score)
-  ↓
-Send to Claude Haiku:
-  system: "You are a helpful assistant grounded in documentation."
-  user: "[4 chunks] + [question]"
-  max_tokens: 1024
-  ↓
-Return grounded answer
-```
-
----
-
-## Job 4 — Auto-Update PIPELINES.md
-
-**File:** `.github/workflows/ci.yml` → `update-pipelines` job  
-**Script:** `.github/scripts/update_pipelines.py`
-
-### Responsibility
-
-Whenever `.github/workflows/` or `.github/scripts/` files change, this job reads all `.yml` and `.py` files, sends them to Claude Haiku with a detailed system prompt, and regenerates `PIPELINES.md` to keep documentation always in sync with actual code.
-
-### Trigger
-
-```yaml
-needs: [changes, generate-pdf, build-vector-store]
-if: >-
-  always() &&
-  github.actor != 'github-actions[bot]' &&
-  needs.changes.result == 'success' &&
-  needs.changes.outputs.pipelines_changed == 'true'
-```
-
-Runs only if:
-- `changes` job succeeded
-- `pipelines_changed` output is `true`
-- Pusher is not the bot
-
-### Steps
-
-```
-1. Checkout (with GITHUB_TOKEN)
-2. git pull --rebase origin main (picks up all prior commits)
-3. Set up Python 3.11
-4. pip install anthropic
-5. python .github/scripts/update_pipelines.py (ANTHROPIC_API_KEY injected)
-6. git commit PIPELINES.md [skip ci] + push
-```
-
-### Script Logic
-
-```python
-# Read all workflow and script files
-workflows_text = read_dir(".github/workflows", "*.yml")
-scripts_text = read_dir(".github/scripts", "*.py")
-current_doc = PIPELINES.md.read()  # for style reference
-
-# Send to Claude
-client.messages.create(
-  model="claude-haiku-4-5",
-  max_tokens=4096,
-  system="""
-    You are a technical writer maintaining PIPELINES.md...
-    Given the actual workflow YAML files and Python scripts, 
-    produce a complete, accurate PIPELINES.md that includes:
-    1. A Mermaid overview diagram...
-    2. One detailed section per pipeline...
-    3. A trigger matrix table...
-    4. A secrets reference table...
-    5. A loop-prevention strategy section...
-    
-    Style: match the depth and voice of the existing document.
-    Output ONLY raw Markdown. No preamble, no explanation.
-  """,
-  messages=[{
-    "role": "user",
-    "content": f"## Current workflow files\n\n{workflows_text}\n\n## Current CI scripts\n\n{scripts_text}\n\n## Existing PIPELINES.md (for style reference)\n\n{current_doc}\n\nWrite the updated PIPELINES.md now."
-  }]
-)
-
-# Write response to PIPELINES.md
-PIPELINES.md.write(response.content[0].text.strip() + "\n")
-```
-
-### Cost
-
-Claude Haiku at ~$0.80 per 1M input tokens, ~$4 per 1M output tokens. A typical invocation (5 KB workflow files + 4 KB existing doc → 4 KB updated doc) costs well under $0.01.
-
-### Output
-
-| File | Status |
-|---|---|
-| `PIPELINES.md` | **Committed** |
-
----
-
-## Job 5 — AI Vibe Check
-
-**File:** `.github/workflows/ci.yml` → `vibe-check` job  
-**Script:** `.github/scripts/vibe_check.py`
-
-### Responsibility
-
-After every push, reads the original user commit's message and diff, sends them to Claude Haiku with a personality prompt, and prepends a witty micro-review to `VIBE_LOG.md`.
-
-### Trigger
-
-```yaml
-needs: [changes, generate-pdf, build-vector-store, update-pipelines]
-if
+| Model |
