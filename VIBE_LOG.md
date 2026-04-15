@@ -4,6 +4,19 @@
 
 ---
 
+## 15 April 2026, 10:00 UTC
+
+**Commit:** `fix warning about pdf generation fonts`  
+**Author:** Antonio Carlo Caruso
+
+> # Vibe Check
+
+Antonio said "fonts are broken" and just... fixed it. Added `fonts-dejavu` to apt installs and sprinkled `monofont="DejaVu Sans Mono"` across three PDF generation commands with surgical precision—no drama, no yak-shaving, just consistency. The fact that this is copy-pasted across multiple jobs makes it slightly less elegant, but hey, it *works* and the warning's dead.
+
+**7/10 — Practical**
+
+---
+
 ## 15 April 2026, 09:52 UTC
 
 **Commit:** `fixing bug with pandoc installation + test pipeline`  
