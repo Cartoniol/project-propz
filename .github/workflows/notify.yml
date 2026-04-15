@@ -1,0 +1,136 @@
+name: Notify CI Complete
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build email body
+        id: body
+        run: |
+          RUN_URL="${{ github.event.workflow_run.html_url }}"
+          CONCLUSION="${{ github.event.workflow_run.conclusion }}"
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          SHORT_SHA="${SHA:0:7}"
+          COMMIT_MSG="${{ github.event.workflow_run.head_commit.message }}"
+          AUTHOR="${{ github.event.workflow_run.head_commit.author.name }}"
+          RUN_NUMBER="${{ github.event.workflow_run.run_number }}"
+          REPO="${{ github.repository }}"
+
+          if [[ "$CONCLUSION" == "success" ]]; then
+            STATUS_EMOJI="✅"
+            STATUS_LABEL="Passed"
+            COLOR="#22c55e"
+            BADGE_COLOR="#16a34a"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_LABEL="Failed"
+            COLOR="#ef4444"
+            BADGE_COLOR="#b91c1c"
+          fi
+
+          # Write the HTML body to a file (avoids quoting issues in GITHUB_OUTPUT)
+          cat > /tmp/email_body.html << HTMLEOF
+          <!DOCTYPE html>
+          <html lang="en">
+          <head><meta charset="UTF-8"></head>
+          <body style="margin:0;padding:0;background:#f4f4f5;font-family:'Segoe UI',Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:32px 0;">
+              <tr><td align="center">
+                <table width="580" cellpadding="0" cellspacing="0"
+                       style="background:#ffffff;border-radius:8px;overflow:hidden;
+                              box-shadow:0 1px 4px rgba(0,0,0,.12);">
+
+                  <!-- Header bar -->
+                  <tr>
+                    <td style="background:${COLOR};padding:20px 32px;">
+                      <span style="font-size:22px;font-weight:700;color:#fff;">
+                        ${STATUS_EMOJI} project-propz CI — ${STATUS_LABEL}
+                      </span>
+                    </td>
+                  </tr>
+
+                  <!-- Body -->
+                  <tr>
+                    <td style="padding:28px 32px;">
+                      <table width="100%" cellpadding="0" cellspacing="0">
+                        <tr>
+                          <td style="padding-bottom:16px;">
+                            <span style="background:${BADGE_COLOR};color:#fff;
+                                         font-size:12px;font-weight:600;padding:3px 10px;
+                                         border-radius:12px;">Run #${RUN_NUMBER}</span>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td style="padding-bottom:8px;font-size:14px;color:#6b7280;">Repository</td>
+                        </tr>
+                        <tr>
+                          <td style="padding-bottom:20px;font-size:15px;color:#111827;font-weight:600;">
+                            ${REPO}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td style="padding-bottom:8px;font-size:14px;color:#6b7280;">Commit</td>
+                        </tr>
+                        <tr>
+                          <td style="padding-bottom:20px;">
+                            <code style="background:#f3f4f6;padding:4px 8px;border-radius:4px;
+                                         font-size:13px;color:#374151;">${SHORT_SHA}</code>
+                            <span style="font-size:14px;color:#374151;margin-left:8px;">${COMMIT_MSG}</span>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td style="padding-bottom:8px;font-size:14px;color:#6b7280;">Author</td>
+                        </tr>
+                        <tr>
+                          <td style="padding-bottom:28px;font-size:15px;color:#111827;">
+                            ${AUTHOR}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td align="center">
+                            <a href="${RUN_URL}"
+                               style="display:inline-block;background:${COLOR};color:#fff;
+                                      text-decoration:none;font-weight:600;font-size:15px;
+                                      padding:12px 28px;border-radius:6px;">
+                              View Run →
+                            </a>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+
+                  <!-- Footer -->
+                  <tr>
+                    <td style="background:#f9fafb;padding:16px 32px;
+                                border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">
+                      Propaganza CI · automated notification · do not reply
+                    </td>
+                  </tr>
+
+                </table>
+              </td></tr>
+            </table>
+          </body>
+          </html>
+          HTMLEOF
+
+          echo "subject=${STATUS_EMOJI} project-propz CI #${RUN_NUMBER} — ${STATUS_LABEL}" >> "$GITHUB_OUTPUT"
+
+      - name: Send notification email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: ${{ steps.body.outputs.subject }}
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: "project-propz CI <${{ secrets.MAIL_USERNAME }}>"
+          html_body: file:///tmp/email_body.html

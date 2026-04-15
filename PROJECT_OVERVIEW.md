@@ -477,3 +477,4 @@ This isn't a tutorial project or a portfolio toy — it's software that gets use
 
 test pipeline generate-pdf 1
 test pipeline complete 1
+test pipeline complete + notify 1
