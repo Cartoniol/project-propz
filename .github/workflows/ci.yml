@@ -363,10 +363,21 @@ jobs:
 
       - name: Convert to PDF
         run: |
-          PANDOC_OPTS="--pdf-engine=xelatex --toc -V geometry:margin=1in -V fontsize=11pt -V mainfont=DejaVu Sans"
+          pandoc PIPELINES_processed.md \
+            --pdf-engine=xelatex \
+            --toc \
+            -V geometry:margin=1in \
+            -V fontsize=11pt \
+            -V "mainfont=DejaVu Sans" \
+            -o PIPELINES.pdf
 
-          pandoc PIPELINES_processed.md $PANDOC_OPTS -o PIPELINES.pdf
-          pandoc VIBE_LOG.md            $PANDOC_OPTS -o VIBE_LOG.pdf
+          pandoc VIBE_LOG.md \
+            --pdf-engine=xelatex \
+            --toc \
+            -V geometry:margin=1in \
+            -V fontsize=11pt \
+            -V "mainfont=DejaVu Sans" \
+            -o VIBE_LOG.pdf
 
           echo "Generated PIPELINES.pdf ($(du -h PIPELINES.pdf | cut -f1))"
           echo "Generated VIBE_LOG.pdf  ($(du -h VIBE_LOG.pdf  | cut -f1))"

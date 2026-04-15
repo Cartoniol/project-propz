@@ -479,3 +479,4 @@ test pipeline generate-pdf 1
 test pipeline complete 1
 test pipeline complete + notify 1
 test pipeline complete + notification + release + versionig 1
+test pipeline complete + notification + release + versionig 2
