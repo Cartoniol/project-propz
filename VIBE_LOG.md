@@ -4,6 +4,17 @@
 
 ---
 
+## 15 April 2026, 09:52 UTC
+
+**Commit:** `fixing bug with pandoc installation + test pipeline`  
+**Author:** Antonio Carlo Caruso
+
+> Ah, the classic "let me inline this variable because shell variable expansion was *definitely* the problem" move—except you actually nailed it. Expanding `$PANDOC_OPTS` was likely causing quoting hell with the mainfont parameter, so you did the sensible thing and went explicit, which is *chef's kiss* for CI reliability. Also respectfully added a newline to PROJECT_OVERVIEW.md like a person with standards.
+
+**7/10 — Pragmatic** (would be higher but repeating 16 lines twice screams "future refactor opportunity")
+
+---
+
 ## 15 April 2026, 09:34 UTC
 
 **Commit:** `added versioning and release management`  
