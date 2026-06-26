@@ -238,41 +238,56 @@ The equivalent raw pnpm scripts remain available (`pnpm build`, `pnpm dev:scoreb
 
 ## 6. GitHub Actions — CI/CD Pipelines
 
-The automation is built around **two entry-point pipelines** that converge on a shared, reusable release workflow, plus several independent utilities. (The internal `.internal/PIPELINES.md` and `.github/workflows/WORKFLOWS.md` are the authoritative source.)
+The automation is built around **two entry-point pipelines** that converge on a shared, reusable release workflow, plus several independent utilities. (The workflow YAML under `.github/workflows/` is the source of truth; the prose in `.internal/PIPELINES.md` and `.github/workflows/WORKFLOWS.md` can lag behind it.)
 
 | Workflow | Trigger | Role |
 |----------|---------|------|
-| `deploy.yml` | Push to `main` (app/site/shared code) | Version → Release → Deploy to Firebase |
-| `update-content.yml` | `repository_dispatch` from content repo | Sync content submodule → Release (if tagged) → Deploy to production |
-| `release.yml` | `workflow_call` (reusable) / manual | Generate PDFs + publish GitHub Release |
+| `deploy.yml` | Push to `main` (app/site/shared code) | Version → Build (matrix) → Deploy (staging → prod) → Release |
+| `update-content.yml` | `repository_dispatch` from content repo | Sync content submodule → Deploy → Release (if tagged) |
+| `release.yml` | `workflow_call` (reusable) / manual | Generate PDFs + publish GitHub Release (or dry-run) |
 | `update-changelog.yml` | Push to `main` (parallel) | Claude generates a `CHANGELOG.md` entry |
 | `upload_to_drive.yml` | `release: published` | Upload PDFs to Google Drive + community email |
 | `deploy-landing.yml` | Manual | Standalone landing-page deploy |
 | `deploy-dev-manual.yml` | Manual (branch input) | Deploy any branch to the dev project |
 
-Reusable helpers (`_deploy-firebase.yml`, `_deploy-only.yml`, `_notify.yml`) factor out the deploy and notification steps shared between pipelines.
+> Note: in both main pipelines, **`release` now runs *after* the deploy**, not before — the app ships first, then the release artifacts are cut from the deployed version.
+
+Three reusable helpers factor out the shared steps: **`_deploy-firebase.yml`** (build all apps *then* deploy), **`_deploy-only.yml`** (deploy already-built artifacts without rebuilding), and **`_notify.yml`** (render and send the status email).
 
 ### `deploy.yml` — Main deployment pipeline
 
-**Trigger:** Push to `main` when files under `app/src/**`, `site/src/**`, or `shared/**` change. A guard (`if: github.actor != 'github-actions[bot]'`) prevents the pipeline from running on the changelog bot's own commits.
+**Trigger:** Push to `main` touching `scoreboard/src/**`, `site/src/**`, `bigbro/src/**`, `dashboard/src/**`, or `shared/**` (also manual `workflow_dispatch`). A guard (`if: github.actor != 'github-actions[bot]'`) skips the changelog bot's own commits, and a `concurrency` group serialises overlapping deploys. The pipeline **builds once, promotes the artifacts staging → prod, then cuts the release**:
 
 ```mermaid
 graph TD
-    A[Push to main] --> B{deploy.yml}
-    B --> C["job: version<br/>Resolve app_tag + content_tag"]
-    C --> D["job: release<br/>Calls release.yml<br/>Generates PDFs + GitHub Release"]
-    D --> E["job: deploy<br/>pnpm build → firebase deploy<br/>(propaganza-dev)"]
-    B --> F["job: vibe-check<br/>Claude Haiku snark on the diff<br/>(continue-on-error)"]
-    E --> G["job: notify<br/>Gmail SMTP — per-job status table"]
-    F --> G
+    A[Push to main] --> V["version<br/>Resolve app_tag + content_tag"]
+    A --> B["build — matrix:<br/>scoreboard · site · bigbro · dashboard<br/>cache → build → fresh / cached / placeholder<br/>upload dist-&lt;app&gt; artifacts"]
+    B --> BS["build-status<br/>aggregate outcomes → JSON"]
+    V --> DS["deploy-staging<br/>_deploy-only.yml → propaganza-dev"]
+    B --> DS
+    DS --> DP["deploy-prod<br/>_deploy-only.yml (main only)"]
+    DS --> R["release<br/>release.yml (dry-run off main)"]
+    DS --> VC["vibe-check<br/>Claude Haiku (continue-on-error)"]
+    DP --> N["notify<br/>_notify.yml — always(), main"]
+    R --> N
+    VC --> N
+    BS --> N
     A -.->|same push, parallel| H["update-changelog.yml<br/>Claude → CHANGELOG.md"]
 ```
 
-- **`version`** — resolves the latest app semver tag (set by the pre-push hook) and the content repo's latest tag.
-- **`release`** — calls `release.yml` to build PDFs and publish a GitHub Release.
-- **`deploy`** — `pnpm install --frozen-lockfile` → `pnpm build` → `firebase deploy` to `propaganza-dev`.
-- **`vibe-check`** — sends the commit diff to Claude Haiku for a snarky energy rating; `continue-on-error: true` so it never blocks a deploy.
-- **`notify`** — runs `always()`; renders a per-job ✅/❌/⏭️ status table and emails the mailing list via Gmail SMTP.
+- **`version`** — checks out the app + content repos and resolves the latest *stable* semver tag of each (`app_tag`, `content_tag`). The app tag is placed by the pre-push hook before the workflow fires.
+- **`build`** *(matrix: scoreboard, site, bigbro, dashboard)* — the resilience layer. Each leg hashes its `src/` + `shared/` + `content/`, restores the **last-good build** from cache (an exact hash hit skips the rebuild entirely), then builds with `continue-on-error`. The outcome resolves to one of:
+  - **fresh** — build succeeded, or an exact cache hit (source unchanged)
+  - **cached** — build failed, but a previous good build was restored as fallback
+  - **placeholder** — build failed with no cache → a small *"Sezione in manutenzione"* maintenance page is shipped instead
+
+  Each leg uploads its compiled `dist-<app>` artifact. Because legs are independent and best-effort, **a single app's build failure never blocks the others or the deploy.**
+- **`build-status`** — aggregates the per-app fresh/cached/placeholder markers into a JSON map, so the notification email can flag a degraded deploy.
+- **`deploy-staging`** — calls `_deploy-only.yml`, which **downloads the pre-built `dist-*` artifacts and deploys them without rebuilding** to `propaganza-dev`.
+- **`deploy-prod`** — runs only on `main` after staging succeeds; promotes the *same* artifacts to the default Firebase project (target `propaganza`).
+- **`release`** — runs **after `deploy-staging` succeeds** (the deploy comes first now). Calls `release.yml` with `dry_run: true` on non-`main` refs, so PDFs are still generated but no GitHub Release is published unless the push is on `main`.
+- **`vibe-check`** — `main` only; sends the commit diff to Claude Haiku for a rated snark; `continue-on-error: true` so it never blocks anything.
+- **`notify`** — runs `always()` on `main`; renders a per-job ✅/❌/⏭️ status table (`version`, `build`, `deploy-staging`, `deploy-prod`, `release`, `vibe-check`) plus the build-status detail, and emails the mailing list via Gmail SMTP.
 
 ### `update-content.yml` — Content sync pipeline
 
@@ -280,36 +295,41 @@ graph TD
 
 ```mermaid
 graph TD
-    A["repository_dispatch<br/>(content-updated)"] --> B["job: sync-and-version<br/>git submodule update --remote<br/>Outputs: content_tag, has_tag"]
-    B -->|has_tag == true| C["job: release<br/>Calls release.yml"]
-    C --> D["job: deploy<br/>Full rebuild → firebase deploy<br/>(propaganza — PRODUCTION)"]
-    B --> E["job: vibe-check<br/>Claude review of content diff"]
-    D --> F["job: notify<br/>Email notification"]
+    A["repository_dispatch<br/>(content-updated)"] --> B["sync-and-version<br/>git submodule update --remote<br/>commit pointer · detect has_tag"]
+    B --> C["deploy<br/>_deploy-firebase.yml<br/>(build all apps + deploy)"]
+    C --> D["release<br/>release.yml — only if has_tag"]
+    C --> E["vibe-check<br/>Claude review of content diff"]
+    D --> F["notify (always)"]
     E --> F
 ```
 
-Unlike `deploy.yml` (which targets `propaganza-dev`), this pipeline deploys to the **production** project when content is tagged.
+- **`sync-and-version`** — advances the `content` submodule pointer, commits it, and detects whether the new content commit is an *exact tagged release* (`has_tag`).
+- **`deploy`** — calls `_deploy-firebase.yml`, which **builds all apps and then deploys** (this path rebuilds, unlike `deploy.yml`'s artifact promotion).
+- **`release`** — runs **after `deploy` succeeds**, and only when `has_tag == 'true'` (a real content release, not a routine commit).
+- **`vibe-check` / `notify`** — same Claude-snark and always-notify pattern as `deploy.yml`.
 
 ### `release.yml` — Reusable release workflow
 
 **Trigger:** `workflow_call` (from `deploy.yml` / `update-content.yml`) or `workflow_dispatch`.
 
-**Inputs:** `app_version`, `content_version` (semantic tags, e.g. `v0.2.33`, `v0.2.4`)
+**Inputs:** `app_version`, `content_version` (semantic tags, e.g. `v0.2.33`, `v0.2.4`), and `dry_run` (generate PDFs but skip publishing).
 
 ```
-inputs: app_version + content_version
+inputs: app_version + content_version + dry_run
     │
     ├── Compute combined release tag: v{app}-{content}
     │       → prerelease if either tag contains "-preview"
-    │       → delete previous preview releases first
+    │       → delete previous preview releases first  (preview, non-dry-run only)
     │
-    ├── Set up Node + pnpm install
-    ├── Generate PDFs — scripts/build/index.ts via tsx (--watermark for previews)
-    ├── Read content-repo tag message → fill ChangelogTemplate.md
+    ├── Set up Node + pnpm install (+ cached Puppeteer Chrome)
+    ├── Generate PDFs — pnpm --dir print run build -- --version <tag> [--watermark]
+    ├── Read content-repo tag message → fill content/templates/ChangelogTemplate.md
     │
-    └── Create GitHub Release
-            tag: v{app}-{content}; assets: output_pdfs/*.pdf
+    └── Create GitHub Release   (SKIPPED when dry_run == true)
+            tag: v{app}-{content}; assets: output_pdfs/*.pdf; prerelease = is_preview
 ```
+
+`dry_run` is how `deploy.yml` keeps non-`main` pushes from publishing releases: PDFs are still built (catching breakage early), but no GitHub Release or tag is created.
 
 ### `update-changelog.yml` — Auto-generated changelog
 
@@ -475,11 +495,11 @@ Game content (rules, card art, assets) lives in a **separate private repository*
 ```mermaid
 graph LR
     A["albkom/propaganza<br/>content repo"] -->|"tags new version<br/>repository_dispatch (content-updated)"| B["update-content.yml"]
-    B -->|"git submodule update --remote<br/>commit pointer bump"| C{has_tag?}
+    B -->|"git submodule update --remote<br/>commit pointer bump"| E["deploy job<br/>rebuild + deploy app"]
+    E --> G["Firebase Hosting"]
+    E --> C{has_tag?}
     C -->|yes| D["release.yml<br/>generate PDFs"]
-    C -->|yes| E["deploy job<br/>rebuild app"]
     D --> F["GitHub Release"]
-    E --> G["Firebase Hosting<br/>(production)"]
 ```
 
 ---
