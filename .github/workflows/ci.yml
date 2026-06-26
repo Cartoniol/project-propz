@@ -164,9 +164,19 @@ jobs:
           git push
 
   # ─── 3. RAG Vector Store ───────────────────────────────────────────────────
+  #
+  # Builds the embeddings consumed by the Streamlit doc-chat (chat/app.py).
+  # Gated on the CHAT_ENABLED repository variable so it is skipped while the
+  # chat is disabled — no point spending CI minutes rebuilding a vector store
+  # nothing reads. To re-enable: set repo variable CHAT_ENABLED=true (Settings
+  # → Secrets and variables → Actions → Variables), then push or run the
+  # workflow manually to rebuild chat/vector_store.json. Mirrors the
+  # CHAT_ENABLED flag/secret in chat/app.py. Downstream jobs use always() and
+  # only gate on `changes`, so skipping this job does not block them.
+  # ───────────────────────────────────────────────────────────────────────────
   build-vector-store:
     needs: [changes, generate-pdf]
-    if: needs.changes.outputs.overview == 'true'
+    if: needs.changes.outputs.overview == 'true' && vars.CHAT_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -16,6 +16,14 @@ import streamlit as st
 import anthropic
 from sentence_transformers import SentenceTransformer
 
+# ── Feature flag ───────────────────────────────────────────────────────────────
+# The doc-chat is temporarily disabled until its purpose is settled. When
+# CHAT_ENABLED is False the app renders a short notice and stops before loading
+# the embedding model, vector store, or calling Claude — so it costs nothing to
+# keep deployed. Flip this back to True (or set st.secrets["CHAT_ENABLED"]) to
+# restore the full RAG interface below; no other code needs to change.
+CHAT_ENABLED = False
+
 # ── Config ───────────────────────────────────────────────────────────────────
 
 STORE_PATH = Path(__file__).parent / "vector_store.json"
@@ -127,6 +135,17 @@ st.set_page_config(
     page_icon="📄",
     layout="centered",
 )
+
+# Allow re-enabling via a secret without editing code, but default to the flag.
+if not st.secrets.get("CHAT_ENABLED", CHAT_ENABLED):
+    st.title("📄 Propaganza — Doc Chat")
+    st.info(
+        "**This assistant is temporarily offline.**\n\n"
+        "The doc-chat is paused while we figure out the right purpose for it. "
+        "In the meantime, the full technical reference lives in "
+        "[`PROJECT_OVERVIEW.md`](https://github.com/Cartoniol/project-propz/blob/main/PROJECT_OVERVIEW.md)."
+    )
+    st.stop()
 
 st.title("📄 Propaganza — Doc Chat")
 st.caption(

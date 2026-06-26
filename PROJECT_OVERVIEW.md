@@ -2,10 +2,6 @@
 
 > This document is intended as a technical reference for reviewers who do not have access to the private repository. It describes the architecture, tooling, deployment strategy, and CI/CD pipeline of the project.
 
-> **💬 Don't want to read? Ask the doc.**
-> This repository includes a RAG-powered chat interface — ask questions about the architecture, stack, or pipelines in plain English:
-> **[project-propz-kl8m5a26jxaeqcqed6juym.streamlit.app](https://project-propz-kl8m5a26jxaeqcqed6juym.streamlit.app)**
-
 ---
 
 ## Why This Project Exists
@@ -14,7 +10,7 @@ Propaganza started as a collaborative project — a board game designed and buil
 
 **The entire codebase was developed with AI as a core collaborator.** I used AI throughout — from architecture decisions and code generation to debugging, documentation, and CI/CD design. What you see here isn't just a side project: it's my day-to-day evidence of how I work with AI to ship production-grade software faster and with more intentionality than I could alone.
 
-The result is a dual-app PWA (a score tracker + a marketing/rules site) built on Vue 3, deployed to Firebase via a fully automated GitHub Actions pipeline, served through Cloudflare, and maintained with a dual-version scheme that separates app releases from content releases. It's been running in production since 2026.
+What began as a dual-app PWA has grown into a **multi-app suite** — a companion score tracker, a marketing/rules site, a campaign landing page, a networked match tracker, an admin dashboard, and a browser-playable digital version of the game — all built on Vue 3, deployed to Firebase via fully automated GitHub Actions pipelines, served through Cloudflare, and maintained with a dual-version scheme that separates app releases from content releases. It's been running in production since 2026.
 
 ---
 
@@ -30,7 +26,7 @@ The result is a dual-app PWA (a score tracker + a marketing/rules site) built on
 8. [Firebase Hosting & Deployment](#8-firebase-hosting--deployment)
 9. [Cloudflare Integration](#9-cloudflare-integration)
 10. [Git Submodule — Content Repo](#10-git-submodule--content-repo)
-11. [Versioning Strategy](#11-versioning-strategy)
+11. [Versioning & Changelog Strategy](#11-versioning--changelog-strategy)
 12. [PWA & Offline Support](#12-pwa--offline-support)
 13. [Security & Secrets Management](#13-security--secrets-management)
 14. [What I'm Proud Of](#14-what-im-proud-of)
@@ -58,16 +54,27 @@ It blends resource management, card combinations, and area control at a BGG comp
 
 ## 2. Propaganza App
 
-Propaganza App is a **board game companion suite** — a dual-application PWA paired with a marketing/rules website. The project is fully self-hosted (Firebase + Cloudflare), production-grade, and built by a small team.
+Propaganza App is a **board game companion suite** — a pnpm monorepo of several Vue 3 applications paired with a shared component library and a PDF generation pipeline. The project is fully self-hosted (Firebase + Cloudflare), production-grade, and built by a small team.
 
 ### Applications
 
-| App | Path | Purpose |
-|-----|------|---------|
-| **Scoring App** | `/app` | Mobile-first digital score tracker for game sessions |
-| **Marketing Site** | `/` | Rules manual, downloads, game info (Italian-language) |
+| App | Workspace dir | Served at | Purpose |
+|-----|---------------|-----------|---------|
+| **Companion (Scoreboard)** | `scoreboard/` | `/scoreboard` | Mobile-first PWA score tracker + rules manual for game sessions |
+| **Marketing Site** | `site/` | `/` | Rules manual, downloads, game info (Italian-language) |
+| **Landing** | `landing/` | separate hosting target | Campaign / pre-launch landing page |
+| **BigBro** | `bigbro/` | `/bigbro` | Networked multiplayer match tracker (Firestore lobby + presence) |
+| **Dashboard** | `dashboard/` | `/dashboard` | Admin / analytics dashboard |
+| **Digital Game** | `game/` | `/game` | Browser-playable game engine (vs Bot; online play scaffolded) |
 
-Both apps share authentication, CSS design tokens, and reusable Vue components via a `shared/` workspace package.
+Two non-application workspace packages support them:
+
+| Package | Role |
+|---------|------|
+| **`shared/`** | Cross-app components, composables, CSS design tokens, and Firebase helpers (auth, Firestore sessions) |
+| **`print/`** | PDF generation tooling for game materials (rulebook, cards, *Carte Maraviglia*) |
+
+All apps share authentication, CSS design tokens, and reusable Vue components via the `shared/` workspace package.
 
 ---
 
@@ -75,53 +82,62 @@ Both apps share authentication, CSS design tokens, and reusable Vue components v
 
 ```
 propaganza-app/
-├── app/                  # Scoring companion (Vue 3 + Vite, base: /app/)
+├── scoreboard/           # Companion score-tracker PWA (Vue 3 + Vite, base: /scoreboard/)
 │   ├── src/
-│   │   ├── App.vue           # Auth gate (Firebase login check)
-│   │   ├── AppContent.vue    # Main game UI shell
-│   │   ├── components/       # SliderColumn, SatelliteMarker, GameHeader, …
-│   │   ├── stores/game.js    # Pinia store — game state
+│   │   ├── stores/game.js    # Pinia store — local game state (START_VAL = 2)
+│   │   ├── components/        # SliderColumn, PlayerSelectModal, GameHeader, …
 │   │   └── main.js
 │   ├── public/               # PWA assets (manifest.json, sw.js, icons)
 │   └── vite.config.js
 │
-├── site/                 # Marketing site (Vue 3 + Vite, base: /)
-│   ├── src/
-│   │   ├── pages/            # HomePage, RulesPage, DownloadPage, AboutPage
-│   │   ├── router.js         # Vue Router config
-│   │   └── main.js
-│   └── vite.config.js
+├── site/                 # Marketing site (Vue 3 + Vite + Vue Router, base: /)
+├── landing/              # Campaign landing page (Vue 3 + Vite)
+├── bigbro/               # Networked match tracker (Vue 3 + Vite + Firestore)
+│   └── src/              # SetupWizard, SessionLobby, JoinSession (invite-code lobby)
+├── dashboard/            # Admin / analytics dashboard (Vue 3 + Vite)
+├── game/                 # Digital game engine (Vue 3 + TypeScript)
+│   └── src/              # DigitalGame.vue, useGameStore.ts, core/ (cards, bot)
 │
 ├── shared/               # Cross-app workspace package
 │   ├── components/           # PzLogo, PzMarkdown, PzModal, WikiRules
 │   ├── composables/          # useCircleRotation, useGradientAnimation
-│   ├── css/                  # Scoped CSS per app (app/, site/, auth/)
-│   ├── firebase/             # config.js, useAuth.js
+│   ├── firebase/             # config.js, useAuth.js, useSessions.js
+│   ├── css/                  # Scoped CSS per app
 │   └── colors.css / tokens.css
 │
-├── content/              # Git submodule → albkom/propaganza
-│   ├── rules/                # Markdown rule chapters (Italian)
-│   ├── assets/               # Card art, faction symbols
-│   └── .scripts/             # Python PDF build scripts
+├── print/                # PDF generation package (rulebook, cards, Maraviglia)
+├── scripts/              # TS build scripts (build/index.ts, rulebook.ts, cards.ts) run via tsx
 │
-├── public/               # Root static assets (cover.png, sw.js, manifest.json)
-├── scripts/              # PWA icon generation (generate-pwa-icons.mjs)
+├── content/              # Git submodule → albkom/propaganza (rules, card art, assets)
+│
+├── .taskfiles/           # Task runner definitions, split by concern
+│   ├── Taskfile.dev.yml      # dev servers
+│   ├── Taskfile.build.yml    # workspace builds + PDF generation
+│   ├── Taskfile.docker.yml   # docker compose helpers
+│   └── Taskfile.deploy.yml   # firebase deploy / preview channels
+│
+├── .internal/            # Internal docs: PIPELINES.md, decision-log/ (ADRs)
 │
 ├── .github/
 │   └── workflows/
-│       ├── deploy.yml            # Main deploy pipeline (push to main)
-│       ├── update-content.yml    # Content sync + redeploy pipeline
-│       ├── release.yml           # Reusable release workflow (PDF generation)
-│       └── upload_to_drive.yml   # Post-release Google Drive upload
+│       ├── deploy.yml             # Main deploy pipeline (push to main)
+│       ├── update-content.yml     # Content submodule sync + redeploy (repository_dispatch)
+│       ├── release.yml            # Reusable release workflow (PDF generation + GitHub Release)
+│       ├── update-changelog.yml   # Claude-generated CHANGELOG entries
+│       ├── upload_to_drive.yml    # Post-release Drive upload + community email
+│       ├── deploy-landing.yml     # Standalone landing-page deploy (manual)
+│       ├── deploy-dev-manual.yml  # Deploy any branch to dev (manual)
+│       └── _deploy-firebase.yml / _deploy-only.yml / _notify.yml  # reusable helpers
 │
-├── Dockerfile            # Multi-stage build (Node 20 → Nginx Alpine)
-├── docker-compose.yml    # Local dev (port 8888)
-├── nginx.conf            # SPA routing for /app/ and /
-├── firebase.json         # Firebase Hosting config (dev)
-├── firebase.beta.json    # Firebase Hosting config (live/beta)
-├── .firebaserc           # Project aliases (default: propaganza-dev, live: websites-a5878)
-├── pnpm-workspace.yaml   # Workspace definition
-└── package.json          # Root scripts and overrides
+├── Taskfile.yml          # Root Task runner (install + includes .taskfiles/)
+├── Dockerfile            # Multi-stage build (Node 22 builder → Nginx Alpine)
+├── docker-compose.yml    # Local dev (prod-like + dev/test profiles + Firebase emulator)
+├── nginx.conf            # SPA routing for all apps
+├── firebase.json         # Firebase Hosting (2 targets) + Emulator Suite config
+├── firestore.rules       # Cloud Firestore security rules
+├── .firebaserc           # Project aliases + hosting targets
+├── pnpm-workspace.yaml   # Workspace definition + overrides + allowBuilds
+└── package.json          # Root scripts and dependency overrides
 ```
 
 ---
@@ -133,143 +149,180 @@ propaganza-app/
 |-------|-----------|
 | UI Framework | Vue.js 3.4+ (Composition API) |
 | Build Tool | Vite 6.4+ |
-| Routing | Vue Router 4 (site only) |
-| State Management | Pinia 2.1 (app only) |
-| Markdown Rendering | markdown-it 14.1+ |
+| Language | JavaScript + TypeScript (game engine, build scripts) |
+| Routing | Vue Router 4 |
+| State Management | Pinia (scoreboard) / a reactive TS store (game engine) |
+| Markdown Rendering | markdown-it 14.1 |
 | Full-text Search | minisearch 7.2 |
-| Image Processing | sharp 0.34 (PWA icon pipeline) |
+| Realtime / Data | Cloud Firestore (BigBro multiplayer lobby & presence) |
 
 ### Backend / Infrastructure
 | Layer | Technology |
 |-------|-----------|
 | Authentication | Firebase Auth |
-| Hosting | Firebase Hosting (free tier) |
+| Database | Cloud Firestore |
+| Hosting | Firebase Hosting (free tier, 2 targets) |
 | CDN / SSL / DDoS | Cloudflare (free tier) |
 | DNS | Custom domain `propaganza.it` via Cloudflare |
 | Package Manager | pnpm 9 (workspaces) |
-| Runtime | Node.js 20 |
+| Task Runner | Task (`taskfile.dev`) |
+| Runtime | Node.js 20 (CI/dev), Node 22 (Docker build) |
 
 ### CI/CD & Tooling
 | Tool | Role |
 |------|------|
-| GitHub Actions | All automation (build, deploy, release, notify) |
-| Docker + Nginx | Local containerised dev environment |
-| Python 3.11 | PDF generation from Markdown (via content scripts) |
-| Firebase CLI | Hosting deployments |
-| Gmail SMTP | Deployment notifications |
+| GitHub Actions | All automation (build, deploy, release, changelog, notify) |
+| Docker + Nginx | Local containerised dev environment + Firebase Emulator |
+| Firebase Emulator Suite | Local Auth + Firestore (`demo-local` project) |
+| tsx + Puppeteer + pdf-lib | PDF generation from Markdown game content |
+| Firebase CLI | Hosting deployments + preview channels |
+| Claude (Anthropic) Haiku | CI vibe-check + auto-generated changelog entries |
+| Gmail SMTP | Deploy notifications + community announcement emails |
 | Google Drive API | Post-release PDF upload |
 
 ---
 
 ## 5. Monorepo & Dependency Management
 
-The project is a **pnpm workspace monorepo** with two publishable packages (`app`, `site`) and one internal package (`shared`).
+The project is a **pnpm workspace monorepo** with several application packages, a shared internal library, and a PDF-generation package.
 
 ```yaml
 # pnpm-workspace.yaml
 packages:
-  - app
+  - shared
+  - scoreboard
   - site
+  - landing
+  - bigbro
+  - dashboard
+  - game
+  - print
 ```
 
 `shared/` is referenced directly by path — it is not published to a registry.
 
 ### Dependency overrides (security)
 
-`package.json` enforces minimum patch versions across the entire workspace:
+`package.json` / `pnpm-workspace.yaml` enforce minimum patch versions across the entire workspace, resolving transitive-dependency CVEs even when sub-packages haven't bumped their own ranges:
 
 ```json
-"pnpm": {
-  "overrides": {
-    "esbuild": ">=0.25",
-    "highlight.js": ">=10.4.1",
-    "markdown-it": ">=12.3.2",
-    "vite": ">=6.4.2"
-  }
+"overrides": {
+  "esbuild@<=0.24.2": ">=0.25.0",
+  "highlight.js@>=9.0.0 <10.4.1": ">=10.4.1",
+  "markdown-it@<12.3.2": ">=12.3.2",
+  "protobufjs@<7.5.5": ">=7.5.5",
+  "vite@<=6.4.1": ">=6.4.2",
+  "vue@>=2.0.0-alpha.1 <3.0.0-alpha.0": ">=3.0.0-alpha.0"
 }
 ```
 
-This ensures transitive dependency vulnerabilities are resolved even when sub-packages haven't updated their own `peerDependencies`.
+An `allowBuilds` allowlist gates which packages may run install scripts (`sharp`, `esbuild`, `puppeteer`, `@firebase/util`, …), so native postinstall steps only run where intended.
 
-### Root scripts
+### Task runner & root scripts
+
+Day-to-day commands go through **Task** (`taskfile.dev`), with the root `Taskfile.yml` including the per-concern files under `.taskfiles/`:
 
 ```bash
-pnpm build           # builds site → dist/, then app → dist/app/
-pnpm dev:site        # Vite dev server on :5174
-pnpm dev:app         # Vite dev server on :5173
-pnpm deploy          # build + firebase deploy (dev project)
-pnpm deploy:beta:live  # build + firebase deploy (live production)
-pnpm preview         # build + 15-minute Firebase preview channel
+task install          # install all workspace dependencies
+task dev              # run scoreboard + site + landing + bigbro in parallel
+task build:build      # build all apps (site + scoreboard + bigbro + dashboard)
+task build:fast       # quick build of just site + scoreboard
+task deploy:deploy    # build + firebase deploy (propaganza-dev)
+task deploy:preview   # build + 15-minute Firebase preview channel
+task docker:dev       # docker compose --profile dev up --build
 ```
+
+The equivalent raw pnpm scripts remain available (`pnpm build`, `pnpm dev:scoreboard`, `pnpm --dir <pkg> build`, …).
 
 ---
 
 ## 6. GitHub Actions — CI/CD Pipelines
 
-There are four workflow files under `.github/workflows/`.
+The automation is built around **two entry-point pipelines** that converge on a shared, reusable release workflow, plus several independent utilities. (The internal `.internal/PIPELINES.md` and `.github/workflows/WORKFLOWS.md` are the authoritative source.)
+
+| Workflow | Trigger | Role |
+|----------|---------|------|
+| `deploy.yml` | Push to `main` (app/site/shared code) | Version → Release → Deploy to Firebase |
+| `update-content.yml` | `repository_dispatch` from content repo | Sync content submodule → Release (if tagged) → Deploy to production |
+| `release.yml` | `workflow_call` (reusable) / manual | Generate PDFs + publish GitHub Release |
+| `update-changelog.yml` | Push to `main` (parallel) | Claude generates a `CHANGELOG.md` entry |
+| `upload_to_drive.yml` | `release: published` | Upload PDFs to Google Drive + community email |
+| `deploy-landing.yml` | Manual | Standalone landing-page deploy |
+| `deploy-dev-manual.yml` | Manual (branch input) | Deploy any branch to the dev project |
+
+Reusable helpers (`_deploy-firebase.yml`, `_deploy-only.yml`, `_notify.yml`) factor out the deploy and notification steps shared between pipelines.
 
 ### `deploy.yml` — Main deployment pipeline
 
-**Trigger:** Push to `main` when files under `app/src/**`, `site/src/**`, or `shared/**` change.
+**Trigger:** Push to `main` when files under `app/src/**`, `site/src/**`, or `shared/**` change. A guard (`if: github.actor != 'github-actions[bot]'`) prevents the pipeline from running on the changelog bot's own commits.
 
 ```mermaid
 graph TD
     A[Push to main] --> B{deploy.yml}
-    B --> C[job: version\nReads semantic tags from git\nOutputs: app_version, content_version]
-    B --> D[job: release\nCalls release.yml\nGenerates PDFs + GitHub Release]
-    B --> E[job: deploy\npnpm install → pnpm build\nfirebase deploy — propaganza-dev]
-    B --> F[job: notify\nGmail SMTP\nSuccess / failure email]
-    D --> G[release.yml\nReusable workflow]
-    G --> H[Python PDF generation\nGitHub Release with assets]
+    B --> C["job: version<br/>Resolve app_tag + content_tag"]
+    C --> D["job: release<br/>Calls release.yml<br/>Generates PDFs + GitHub Release"]
+    D --> E["job: deploy<br/>pnpm build → firebase deploy<br/>(propaganza-dev)"]
+    B --> F["job: vibe-check<br/>Claude Haiku snark on the diff<br/>(continue-on-error)"]
+    E --> G["job: notify<br/>Gmail SMTP — per-job status table"]
+    F --> G
+    A -.->|same push, parallel| H["update-changelog.yml<br/>Claude → CHANGELOG.md"]
 ```
+
+- **`version`** — resolves the latest app semver tag (set by the pre-push hook) and the content repo's latest tag.
+- **`release`** — calls `release.yml` to build PDFs and publish a GitHub Release.
+- **`deploy`** — `pnpm install --frozen-lockfile` → `pnpm build` → `firebase deploy` to `propaganza-dev`.
+- **`vibe-check`** — sends the commit diff to Claude Haiku for a snarky energy rating; `continue-on-error: true` so it never blocks a deploy.
+- **`notify`** — runs `always()`; renders a per-job ✅/❌/⏭️ status table and emails the mailing list via Gmail SMTP.
 
 ### `update-content.yml` — Content sync pipeline
 
-**Trigger:** `repository_dispatch` webhook (sent by the content repo `albkom/propaganza` when new content is tagged) **or** manual `workflow_dispatch`.
+**Trigger:** `repository_dispatch` (`content-updated`) sent by the content repo `albkom/propaganza`, or manual `workflow_dispatch`.
 
 ```mermaid
 graph TD
-    A[repository_dispatch webhook\nor workflow_dispatch] --> B[job: sync-and-version\ngit submodule update --remote\nOutputs: has_changes, content_version]
-    B -->|has_changes == true| C[job: release\nCalls release.yml]
-    B -->|has_changes == true| D[job: deploy\nFull rebuild\nfirebase deploy — live project]
-    B --> E[job: notify\nEmail notification]
-    C --> F[release.yml\nGenerates PDFs\nCreates GitHub Release]
+    A["repository_dispatch<br/>(content-updated)"] --> B["job: sync-and-version<br/>git submodule update --remote<br/>Outputs: content_tag, has_tag"]
+    B -->|has_tag == true| C["job: release<br/>Calls release.yml"]
+    C --> D["job: deploy<br/>Full rebuild → firebase deploy<br/>(propaganza — PRODUCTION)"]
+    B --> E["job: vibe-check<br/>Claude review of content diff"]
+    D --> F["job: notify<br/>Email notification"]
+    E --> F
 ```
+
+Unlike `deploy.yml` (which targets `propaganza-dev`), this pipeline deploys to the **production** project when content is tagged.
 
 ### `release.yml` — Reusable release workflow
 
-**Trigger:** `workflow_call` (called by `deploy.yml` and `update-content.yml`) or `workflow_dispatch` (manual).
+**Trigger:** `workflow_call` (from `deploy.yml` / `update-content.yml`) or `workflow_dispatch`.
 
 **Inputs:** `app_version`, `content_version` (semantic tags, e.g. `v0.2.33`, `v0.2.4`)
 
 ```
 inputs: app_version + content_version
     │
-    ├── Checkout propaganza-app + content repo
-    ├── Compute combined release tag: v{appVer}-{contentVer}
-    │       → marks as prerelease if either tag contains "-preview"
-    │       → deletes previous preview releases before creating new one
+    ├── Compute combined release tag: v{app}-{content}
+    │       → prerelease if either tag contains "-preview"
+    │       → delete previous preview releases first
     │
-    ├── Set up Python 3.11 + install requirements (cached by pip)
-    │
-    ├── Generate PDFs
-    │       python content/.scripts/build.py --a5 --booklet
-    │       python content/.scripts/build_cards.py
-    │
-    ├── Extract tag message from content repo (changelog notes)
-    ├── Build release body from ChangelogTemplate.md
+    ├── Set up Node + pnpm install
+    ├── Generate PDFs — scripts/build/index.ts via tsx (--watermark for previews)
+    ├── Read content-repo tag message → fill ChangelogTemplate.md
     │
     └── Create GitHub Release
-            tag: v{appVer}-{contentVer}
-            assets: content/output_pdfs/*.pdf
-            prerelease: true/false
+            tag: v{app}-{content}; assets: output_pdfs/*.pdf
 ```
 
-### `upload_to_drive.yml` — Post-release Google Drive upload
+### `update-changelog.yml` — Auto-generated changelog
 
-**Trigger:** `release` event (on published).
+Runs in parallel with `deploy.yml` on every `main` push touching source or workflow files. Collects commits since the last changelog update, asks **Claude Haiku** to write a human-friendly Markdown entry (or `SKIP`), and prepends it to `CHANGELOG.md`. Two guards prevent infinite loops: it skips bot commits and its own `chore: update changelog` commits.
 
-Uploads the PDF artifacts attached to a GitHub Release to a shared Google Drive folder, making game materials available to collaborators without requiring a GitHub account.
+### `upload_to_drive.yml` — Post-release distribution
+
+Fires on `release: published`. Downloads the release's PDF assets, uploads them to a shared **Google Drive** folder, appends idempotent Drive links to the release notes, and — if a Firestore subscriber waitlist is non-empty — sends a rendered HTML **community announcement email** via Gmail SMTP (BCC).
+
+### Standalone manual workflows
+
+- **`deploy-landing.yml`** — builds and deploys only the landing page to its Firebase hosting target.
+- **`deploy-dev-manual.yml`** — builds any branch and ships it to `propaganza-dev` (no tagging, no release, no email) for staging.
 
 ---
 
@@ -277,17 +330,15 @@ Uploads the PDF artifacts attached to a GitHub Release to a shared Google Drive 
 
 | Secret | Used by |
 |--------|---------|
-| `APP_REPO_TOKEN` | Cross-repo checkout (content submodule, PAT) |
-| `FIREBASE_SERVICE_ACCOUNT` | Firebase Hosting deployments |
-| `VITE_FIREBASE_API_KEY` | Firebase SDK (injected at build time) |
-| `VITE_FIREBASE_AUTH_DOMAIN` | Firebase SDK |
-| `VITE_FIREBASE_PROJECT_ID` | Firebase SDK |
-| `VITE_FIREBASE_STORAGE_BUCKET` | Firebase SDK |
-| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Firebase SDK |
-| `VITE_FIREBASE_APP_ID` | Firebase SDK |
-| `GMAIL_USERNAME` | Deployment notification emails |
-| `GMAIL_APP_PASSWORD` | Deployment notification emails |
-| `MAILING_LIST` | Notification recipients |
+| `APP_REPO_TOKEN` | Cross-repo checkout of the private content repo (PAT) |
+| `GITHUB_TOKEN` | GitHub API ops (releases, tags) |
+| `FIREBASE_SERVICE_ACCOUNT` | Firebase Hosting deploys + Firestore access |
+| `VITE_FIREBASE_*` | Firebase SDK config, injected at Vite build time |
+| `ANTHROPIC_API_KEY` | Claude Haiku — vibe-check + changelog generation |
+| `GOOGLE_OAUTH_CREDENTIALS` | Google Drive API (release PDF upload) |
+| `DRIVE_FOLDER_ID` | Target Drive folder for uploads |
+| `GMAIL_USERNAME` / `GMAIL_APP_PASSWORD` | SMTP for deploy + community emails |
+| `MAILING_LIST` | Internal deploy-notification recipients |
 
 Firebase credentials are injected via `VITE_*` environment variables at Vite build time — they are never stored in the repository.
 
@@ -295,21 +346,23 @@ Firebase credentials are injected via `VITE_*` environment variables at Vite bui
 
 ## 7. Docker & Local Development
 
-Docker is provided for reviewers and contributors who want a production-like local environment without installing the full toolchain.
+Docker provides a production-like environment and a full hot-reload dev stack — including the Firebase Emulator — without installing the toolchain on the host.
 
 ### Dockerfile (multi-stage)
 
 ```dockerfile
-# Stage 1 — Builder
-FROM node:20-alpine
-# Enables pnpm via corepack
-RUN corepack enable
+# Stage 1 — Builder (Node 22 Alpine, pnpm via corepack)
+FROM node:22-alpine AS builder
 WORKDIR /app
-COPY . .
+RUN corepack enable && apk add --no-cache git
+# Copy manifests first for a cache-friendly install layer
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY shared/package.json scoreboard/package.json site/package.json \
+     bigbro/package.json landing/package.json dashboard/package.json ./<pkg>/
 RUN pnpm install --frozen-lockfile
-# Copies .env files for Vite build
-RUN pnpm run build
-# Output: /app/dist
+COPY . .
+# Firebase config arrives as build ARGs → exposed as VITE_* ENV for `vite build`
+RUN pnpm run build      # builds site, scoreboard, bigbro, dashboard → dist/
 
 # Stage 2 — Serve
 FROM nginx:alpine
@@ -319,34 +372,37 @@ EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
 ```
 
-### docker-compose.yml
-
-```yaml
-services:
-  frontend-app:
-    build: .
-    ports:
-      - "8888:80"
-    restart: unless-stopped
-```
-
-Run with:
+### docker-compose.yml — three modes via profiles
 
 ```bash
+# Production-like — all apps built and served from one nginx container
 docker compose up --build
-# App available at http://localhost:8888
+# → http://localhost:8080
+
+# Development — hot-reload Vite dev servers + Firebase Emulator
+docker compose --profile dev up
+# → :5173 scoreboard · :5174 site · :5175 bigbro · :5176 landing · :5177 dashboard
+# → :4000 Emulator UI · :9099 Auth · :8080 Firestore
+
+# Emulator only (integration tests without the apps)
+docker compose --profile test up firebase-emulator
 ```
+
+Each dev service runs one Vite dev server. **Named volumes** isolate the Linux container's `node_modules` from the Windows host's, avoiding native-binary conflicts. The emulator runs under the `demo-local` project (a Firebase convention that needs no login), persisting state to a named `emulator-data` volume via `--import` / `--export-on-exit`.
 
 ### Nginx routing (`nginx.conf`)
 
-The Nginx config handles two separate Vue Router apps served from the same container:
+A single container serves every app, each with its own SPA fallback so Vue Router handles client-side navigation:
 
 ```
-GET /app/*   → try_files $uri $uri/ /app/index.html
-GET /*       → try_files $uri $uri/ /index.html
+GET /            → /index.html              (marketing site)
+GET /scoreboard  → /scoreboard/index.html   (companion app)
+GET /bigbro      → /bigbro/index.html       (match tracker)
+GET /dashboard   → /dashboard/index.html    (admin dashboard)
+GET /landing     → /landing/index.html      (landing page)
 ```
 
-Both routes use the SPA fallback pattern so that Vue Router handles all client-side navigation. IPv6 is enabled for compatibility with Windows `localhost` resolution.
+IPv6 listening is enabled for Windows `localhost` resolution, and `absolute_redirect off` preserves the external Docker port in redirects.
 
 ---
 
@@ -359,16 +415,22 @@ Both routes use the SPA fallback pattern so that Vue Router handles all client-s
 | `default` | `propaganza-dev` | Development / staging |
 | `live` | `websites-a5878` | Production |
 
-### Hosting rewrites (firebase.json)
+### Hosting targets (`.firebaserc` + `firebase.json`)
+
+Production hosts two targets: **`propaganza`** (the main suite) and **`propaganza-landing`** (the landing page), each deployable independently.
 
 ```json
+// firebase.json — propaganza target rewrites
 "rewrites": [
-  { "source": "/app/**", "destination": "/app/index.html" },
-  { "source": "**",      "destination": "/index.html"     }
+  { "source": "/scoreboard/**", "destination": "/scoreboard/index.html" },
+  { "source": "/bigbro/**",     "destination": "/bigbro/index.html" },
+  { "source": "/dashboard/**",  "destination": "/dashboard/index.html" },
+  { "source": "/game/**",       "destination": "/game/index.html" },
+  { "source": "**",             "destination": "/index.html" }
 ]
 ```
 
-Mirrors the Nginx config — both Vue Router apps receive their respective SPA fallbacks.
+This mirrors the Nginx config — every Vue Router app receives its own SPA fallback. The same `firebase.json` also declares the **Emulator Suite** ports (Auth 9099, Firestore 8080, UI 4000) and points Firestore at `firestore.rules`.
 
 ### Domain redirect (client-side)
 
@@ -381,7 +443,7 @@ if (h !== 'localhost' && h !== 'propaganza.it' && h !== 'www.propaganza.it') {
 }
 ```
 
-The redirect runs before the Vue app mounts, preserving the original path, query string, and hash fragment.
+The redirect runs before the Vue app mounts, preserving the original path, query string, and hash fragment. It is a client-side convenience, not a hard security boundary.
 
 ---
 
@@ -394,7 +456,7 @@ The custom domain `propaganza.it` is proxied through Cloudflare, which provides:
 - **Caching** — Static assets (JS, CSS, images) are cached at Cloudflare edge nodes globally.
 - **Access Control** — Cloudflare Access can be layered on for staging environments.
 
-The `.web.app` and `.firebaseapp.com` Firebase URLs are never advertised publicly and are redirected client-side to the custom domain (see §7).
+The `.web.app` and `.firebaseapp.com` Firebase URLs are never advertised publicly and are redirected client-side to the custom domain (see §8).
 
 ---
 
@@ -412,37 +474,40 @@ Game content (rules, card art, assets) lives in a **separate private repository*
 
 ```mermaid
 graph LR
-    A[albkom/propaganza\ncontent repo] -->|tags new version\nrepository_dispatch webhook| B[update-content.yml]
-    B -->|git submodule update --remote\napplies version tag| C[release.yml]
-    B --> D[deploy.yml]
-    C -->|generates PDFs| E[GitHub Release]
-    D -->|rebuilds app| F[Firebase Hosting\nlive project]
+    A["albkom/propaganza<br/>content repo"] -->|"tags new version<br/>repository_dispatch (content-updated)"| B["update-content.yml"]
+    B -->|"git submodule update --remote<br/>commit pointer bump"| C{has_tag?}
+    C -->|yes| D["release.yml<br/>generate PDFs"]
+    C -->|yes| E["deploy job<br/>rebuild app"]
+    D --> F["GitHub Release"]
+    E --> G["Firebase Hosting<br/>(production)"]
 ```
 
 ---
 
-## 11. Versioning Strategy
+## 11. Versioning & Changelog Strategy
 
 The project uses a **dual-version scheme**: one for the app, one for the content.
 
-- App version: `v0.2.33` — driven by git tags on this repo.
+- App version: `v0.2.33` — driven by git tags on this repo (the pre-push hook enforces a tag before push).
 - Content version: `v0.2.4` — driven by git tags on the content repo.
 - Combined release tag: `v0.2.33-0.2.4` (published as a GitHub Release).
 
-Preview/pre-release builds are suffixed with `-preview` and are automatically cleaned up (previous preview releases deleted) when a new preview is created, keeping the Releases page tidy.
+Preview/pre-release builds are suffixed with `-preview`, watermarked in the generated PDFs, and automatically cleaned up (previous preview releases deleted) when a new preview is created — keeping the Releases page tidy.
 
-Version metadata is injected into the built app via Vite's `define` (CSS custom properties `--pz-version`, `--pz-build-hash`, `--pz-build-date`), making the running version inspectable in devtools.
+A separate **`CHANGELOG.md`** is maintained automatically: `update-changelog.yml` collects commits since the last update and has Claude Haiku draft a human-readable entry on every `main` push. Version metadata is also injected into the built apps at build time, making the running version inspectable in devtools.
 
 ---
 
 ## 12. PWA & Offline Support
 
-The scoring app is installed as a PWA on mobile devices.
+The companion scoreboard app is installed as a PWA on mobile devices.
 
 - **`manifest.json`** — Declares app name, icons, display mode (`standalone`), theme colour.
 - **`sw.js`** (Service Worker) — Caches app shell and static assets on first load; serves from cache when offline. This is essential for game sessions where internet connectivity is not guaranteed.
-- **PWA icon pipeline** — `scripts/generate-pwa-icons.mjs` uses `sharp` to generate all required icon sizes from a single source SVG. This runs as a `prebuild` step.
+- **PWA icon pipeline** — `sharp` generates all required icon sizes from a single source SVG as a `prebuild` step.
 - **Haptic feedback** — The app calls the Vibration API on touch interactions (score changes, drag events) to improve the board-game tactile feel on mobile.
+
+The BigBro tracker and digital game additionally persist state — BigBro to **Cloud Firestore** (multiplayer sessions, presence) and the game engine to `localStorage` (single-device sessions survive reload).
 
 ---
 
@@ -452,10 +517,12 @@ The scoring app is installed as a PWA on mobile devices.
 |---------|---------|
 | Firebase credentials | Never committed; injected as `VITE_*` env vars at CI build time |
 | GitHub PAT | Stored as `APP_REPO_TOKEN` secret; used only for cross-repo actions |
+| Third-party API keys | `ANTHROPIC_API_KEY`, `GOOGLE_OAUTH_CREDENTIALS` held as repo secrets only |
 | Domain exposure | Client-side redirect prevents Firebase `.web.app` URL from being usable |
-| Dependency CVEs | `pnpm.overrides` pins minimum versions of known-vulnerable transitive deps |
-| Firebase rules | Auth-gated; only authenticated users can read/write user data |
-| Git hooks | Pre-push hook enforces version bump tagging before `git push` |
+| Dependency CVEs | `pnpm` overrides pin minimum versions of known-vulnerable transitive deps |
+| Firestore rules | `firestore.rules` is auth-gated; only authenticated users read/write their data |
+| Local development | Firebase Emulator runs under a credential-free `demo-local` project |
+| Git hooks | Pre-push hook enforces version-bump tagging before `git push` |
 
 ---
 
@@ -463,14 +530,14 @@ The scoring app is installed as a PWA on mobile devices.
 
 This isn't a tutorial project or a portfolio toy — it's software that gets used at a table with real people, which changes how you think about quality.
 
-**The CI/CD pipeline is genuinely hands-free.** From a `git push` to a live production deploy with versioned PDF artifacts uploaded to Google Drive, zero manual steps are required. The content repo and app repo are decoupled but coordinated via webhooks — a design decision that took several iterations to get right, and one I worked through with AI as a thinking partner.
+**The CI/CD pipeline is genuinely hands-free.** From a `git push` to a live production deploy with versioned PDF artifacts uploaded to Google Drive and a community announcement email sent to the waitlist, zero manual steps are required. The content repo and app repo are decoupled but coordinated via webhooks — a design decision that took several iterations to get right, and one I worked through with AI as a thinking partner.
 
 **The dual-version scheme solves a real problem.** Game rules evolve on a different cadence than app code. Treating them as separate versioned artifacts — with a combined release tag — means a rules update doesn't require an app release, and vice versa. It's a small design decision that made the whole project easier to maintain.
 
 **The Cloudflare/Firebase combination is zero-cost production infrastructure.** The project runs on entirely free tiers: Firebase Hosting, Cloudflare free plan, GitHub Actions free minutes. The client-side domain redirect that forces all traffic through Cloudflare (bypassing Firebase's default URLs) was a creative constraint solution — no paid plan needed.
 
-**AI was a genuine accelerator, not a crutch.** I used AI throughout the development of this project — to reason through architecture trade-offs, generate boilerplate, debug CI YAML, and write this document. The value wasn't in having AI write code for me, but in being able to iterate faster, ask "what are the failure modes of this approach?", and get a second opinion at 11pm when no one else is online. The result is a codebase that's more coherent and better documented than it would have been otherwise.
+**AI was a genuine accelerator, not a crutch.** I used AI throughout the development of this project — to reason through architecture trade-offs, generate boilerplate, debug CI YAML, write changelog entries, and produce this document. The value wasn't in having AI write code for me, but in being able to iterate faster, ask "what are the failure modes of this approach?", and get a second opinion at 11pm when no one else is online. The result is a codebase that's more coherent and better documented than it would have been otherwise.
 
 ---
 
-*Document generated from source inspection of the private repository. Last updated: April 2026.*
+*Document generated from source inspection of the private repository. Last updated: June 2026.*
