@@ -4,6 +4,17 @@
 
 ---
 
+## 26 June 2026, 14:33 UTC
+
+**Commit:** `updated with latest pipeline upgrades`  
+**Author:** Cartoniol
+
+> You just rewrote your entire CI/CD documentation to match what the pipelines *actually do* — and frankly, that's the vibe. The prose now admits "YAML is the source of truth" (not you), you've reordered `deploy.yml` so release comes *after* the app ships (a genuine architectural improvement), and you've added genuinely useful detail like the three-tier build resilience (fresh/cached/placeholder) and artifact promotion flow. The mermaid diagrams are now accurate mirrors of the real logic instead of aspirational sketches. Only minor gripe: this is a *lot* of words now, and someone will probably let it drift again in six months — but at least you know it.
+
+**7/10 — Meticulous** 🎯
+
+---
+
 ## 26 June 2026, 14:19 UTC
 
 **Commit:** `disabled chat, updated content`  
